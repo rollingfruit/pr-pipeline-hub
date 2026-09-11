@@ -4,8 +4,10 @@
 
 The same real browser driver supports existing-environment diagnostics and a
 verified Robot CI build rollout. Neither mode is a PR verdict or a baseline
-comparison. The build bridge currently supports only agent-governance-gw in
-environment a5932430eb2f.
+comparison. The build bridge resolves each module's existing Robot CI environment
+and deployment/container mapping. Environment a5932430eb2f anchors the trusted
+dev-gamma cluster connection, not the only allowed module ID. Six selectable
+suites are passed unchanged; the default remains E01/E02/E03.
 Robot CI remains the source of environment credentials and website sessions.
 Its SWR login is registry authentication, not the identity used by a bot.
 
@@ -56,12 +58,17 @@ reset. Historical failed runs remain available as evidence of that issue.
 
 ## Isolation and limitations
 
-Diagnostics use a per-environment nonblocking lock, one browser worker and the
+Diagnostics use a cluster-wide nonblocking lock across module IDs, one browser worker and the
 existing `pr-e2e.slice` budget. This lock is NOT the PostgreSQL batch lease or the
 original CCE deployment lock. Other users can still update dev-gamma; the driver
 compares deployment templates at the end and marks changes stale. It never rolls
 back other users' changes. Do not advertise concurrent shared-environment rollout
 safety until the original rollout path and batch scheduler share a single lease.
+
+The selected image is rolled out before extracting the matching Multica Daemon.
+E05 enables fault control for this invocation's dedicated profile only. E04/E06
+use the dynamically forwarded Multica endpoint. Existing modules without an
+environment/workload mapping require configuration rather than guessed targets.
 
 Diagnostic records describe existing images. Build records additionally include
 the actual build SHA, immutable SWR reference and image config digest. Rollout

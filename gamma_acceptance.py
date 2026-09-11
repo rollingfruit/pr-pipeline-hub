@@ -48,6 +48,8 @@ def main():
         build = json.loads(manifest.read_text())
         if build['environment_id'] != args.environment_id:
             parser.error('Environment mismatch')
+        if build.get('suite_ids') is not None and build['suite_ids'] != args.suites:
+            parser.error('Selected suites differ from the frozen build handoff')
     account = pwd.getpwnam('pr-e2e')
     viewer = pwd.getpwnam('prpipeline')
     run_id = 'gamma-check-' + time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
@@ -64,7 +66,7 @@ def main():
               + [('report', '归档真实证据')]]
     redactions = []
     if build:
-        stages.insert(2, {'id': 'deploy', 'name': '部署本次 SWR 镜像', 'status': 'queued', 'conclusion': None})
+        stages.insert(1, {'id': 'deploy', 'name': '部署本次 SWR 镜像', 'status': 'queued', 'conclusion': None})
         stages.insert(-1, {'id': 'restore', 'name': '失败恢复检查', 'status': 'queued', 'conclusion': None})
     run = {'id': run_id, 'title': 'dev-gamma 当前环境真实 E2E 诊断', 'created_at': now(),
            'started_at': now(), 'status': 'running', 'repo': 'rollingfruit/agent-governance-gw',
@@ -72,13 +74,15 @@ def main():
            'execution_location': 'ecs-liusong-ci', 'environment_id': args.environment_id,
            'requested_by': 'operator', 'trigger_source': 'manual_environment_diagnostic',
            'profile': 'browser-e2e', 'stages': stages, 'test_results': [],
-           'suites': [{'id': s, 'name': s, 'kind': 'browser', 'implemented': True} for s in args.suites],
+           'suites': [{'id': s, 'name': s, 'kind': {'E05':'resilience','E06':'hybrid'}.get(s,'browser'),
+                       'reason':'用户选择', 'implemented': True} for s in args.suites],
            'summary': '验证已有 dev-gamma 镜像；不构建、不部署、不作合入结论',
            'github': {'state': 'disabled'}, 'environment_status': 'running',
            'review': {'status': 'disabled', 'summary': '本次只执行环境 E2E', 'findings': []}}
     if build:
         run.update(title='dev-gamma 构建产物部署与真实 E2E', diagnostic=False,
                    trigger_source='robot_ci_build',
+                   repo=build['result']['service_id'],
                    build_result={'build_id': build['build_id'], 'source_sha': build['result']['commit_sha'],
                                  'image': build['pinned_image'], 'image_id': build['image_id']},
                    summary='验证本次构建产物，不作 PR 合入结论')
@@ -115,7 +119,8 @@ def main():
             result = subprocess.run(['/usr/sbin/runuser', '-u', 'pr-e2e', '--', *map(str, argv)],
                 cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         return result.returncode
-    lock = (root.parent / (args.environment_id + '.lock')).open('a')
+    # All per-module environment IDs share one cluster and therefore one lock.
+    lock = (root.parent / 'dev-gamma.lock').open('a')
     try:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -135,14 +140,39 @@ def main():
             if json.load(response).get('status') != 'OK':
                 raise RuntimeError('Mattermost is not healthy')
         frozen = []
-        for name in ('governance', 'mattermost', 'multica-server'):
-            obj = access.resource('deployment', name)
+        for obj in access.resource('deployments')['items']:
+            name = obj['metadata']['name']
             frozen.append({'name': name, 'uid': obj['metadata']['uid'],
                 'template': obj['spec']['template'], 'generation': obj['metadata']['generation']})
         # Keep complete templates private: environment variables may contain secrets.
         write(private / 'deployment-snapshot.json', frozen)
         run['image_manifest'] = [{'name': item['name'], 'generation': item['generation'],
             'images': [c['image'] for c in item['template']['spec']['containers']]} for item in frozen]
+        finish()
+        if build:
+            start('deploy')
+            from gamma_rollout import GammaRollout
+            rollout = GammaRollout(access, build, private)
+            run['rollout'] = rollout.prepare()
+            snapshot = next((s for s in frozen if s['name'] == rollout.deploy), None)
+            if not snapshot or snapshot['template'] != rollout.before['spec']['template']:
+                raise RuntimeError('Deployment changed before rollout')
+            save()
+            if build['deploy']:
+                rollout.apply()
+            elif run['rollout']['before'] != build['pinned_image']:
+                raise RuntimeError('Test-only mode requires the exact built image to be already deployed')
+            for item in frozen:
+                obj = access.resource('deployment', item['name'])
+                expected = rollout.expected if item['name'] == rollout.deploy and build['deploy'] else item['template']
+                if obj['metadata']['uid'] != item['uid'] or obj['spec']['template'] != expected:
+                    run['stale'] = True
+                    raise RuntimeError('Environment changed during rollout: ' + item['name'])
+                item.update(template=obj['spec']['template'], generation=obj['metadata']['generation'])
+            run['image_manifest'] = [{'name': item['name'], 'generation': item['generation'],
+                'images': [c['image'] for c in item['template']['spec']['containers']]} for item in frozen]
+            finish()
+        start('bootstrap')
         namespace = shlex.quote(access.namespace)
         token = access.remote(f'kubectl -n {namespace} exec deployment/multica-server -- printenv SERVICE_INTERNAL_TOKEN').strip()
         if not token:
@@ -164,7 +194,7 @@ def main():
         source = Path('/opt/pr-pipeline-ci/stack')
         stack = root / 'stack'
         stack.mkdir()
-        for name in ('stack.py', 'bootstrap.py', 'local_daemon.py'):
+        for name in ('stack.py', 'bootstrap.py', 'local_daemon.py', 'fault-control.py'):
             shutil.copy2(source / name, stack / name)
         shutil.copytree(source / 'playwright', stack / 'playwright',
                         ignore=shutil.ignore_patterns('node_modules', 'results', 'test-results'))
@@ -177,6 +207,7 @@ def main():
         workspace.mkdir()
         cfg.update(AGENT_PROVIDER='opencode', TEST_ADMIN_USER='gamma-e2e-' + secrets.token_hex(5),
             OPENCODE_FIXTURE_ACCESS=True, E2E_SINGLE_PROVIDER=True,
+            E2E_RESILIENCE_ENABLED='E05' in args.suites,
             TEST_ADMIN_PASSWORD=password, TEST_WORKSPACE=str(workspace), CODEX_PROXY='',
             LOCAL_DAEMON_PROFILE='pr-e2e-gamma-' + secrets.token_hex(4))
         cfg['TEST_ADMIN_EMAIL'] = cfg['TEST_ADMIN_USER'] + '@example.invalid'
@@ -195,34 +226,13 @@ def main():
             'E2E_SETTINGS_FILE': str(private / 'settings.json'), 'E2E_SETTINGS': str(private / 'settings.json'),
             'E2E_PRIVATE_DIR': str(private), 'E2E_APP_URL': app_url, 'E2E_MULTICA_URL': multica_url,
             'E2E_DISCOVER_BROWSER_IDENTITY': '1',
+            'PIPELINE_CLOUD_PROFILE': '1',
             'PLAYWRIGHT_BROWSERS_PATH': '/var/lib/pr-e2e/.cache/ms-playwright',
             'NODE_EXTRA_CA_CERTS': '/etc/pki/tls/certs/ca-bundle.crt', 'SSL_CERT_FILE': '/etc/pki/tls/certs/ca-bundle.crt',
             'NO_PROXY': '127.0.0.1,localhost,::1'}
-        finish()
-        start('bootstrap')
         if command(['/opt/pr-pipeline-ci/.venv/bin/python', stack / 'bootstrap.py'], timeout=240):
             raise RuntimeError('Dedicated test identity/runtime preparation failed; see bootstrap log')
         finish()
-        if build:
-            start('deploy')
-            from gamma_rollout import GammaRollout
-            rollout = GammaRollout(access, build, private)
-            run['rollout'] = rollout.prepare()
-            save()
-            if build['deploy']:
-                rollout.apply()
-            elif run['rollout']['before'] != build['pinned_image']:
-                raise RuntimeError('Test-only mode requires the exact built image to be already deployed')
-            for item in frozen:
-                obj = access.resource('deployment', item['name'])
-                expected = rollout.expected if item['name'] == rollout.deploy and build['deploy'] else item['template']
-                if obj['metadata']['uid'] != item['uid'] or obj['spec']['template'] != expected:
-                    run['stale'] = True
-                    raise RuntimeError('Environment changed during rollout: ' + item['name'])
-                item.update(uid=obj['metadata']['uid'], template=obj['spec']['template'], generation=obj['metadata']['generation'])
-            run['image_manifest'] = [{'name': item['name'], 'generation': item['generation'],
-                'images': [c['image'] for c in item['template']['spec']['containers']]} for item in frozen]
-            finish()
         from e2e_catalog import validate_result
         failed = []
         for suite in args.suites:
@@ -247,7 +257,7 @@ def main():
             if latest['metadata']['uid'] != item['uid'] or latest['spec']['template'] != item['template']:
                 run['stale'] = True
         run['conclusion'] = 'failure' if failed else 'error' if run.get('stale') else 'success'
-        run['summary'] = ('未通过: ' + ', '.join(failed)) if failed else ('本次构建镜像部署及 E01/E02/E03 通过' if build else '所选用例通过（仅当前环境诊断）')
+        run['summary'] = ('未通过: ' + ', '.join(failed)) if failed else ('本次构建镜像验证通过：' + ', '.join(args.suites) if build else '所选用例通过（仅当前环境诊断）')
         if run.get('stale'): run['summary'] += '；运行期间镜像或配置被外部更新'
     except Exception as error:
         finish(False)

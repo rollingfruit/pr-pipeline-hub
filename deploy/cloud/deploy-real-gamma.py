@@ -11,7 +11,7 @@ import time
 
 root = Path('/opt/swr-push-helper')
 target = root / 'server.py'
-expected = '42700bbd13f385277b44283478eedeeed90c7209c0e534307117d84090e51eab'
+expected = '2cfbcffe2fefb8be4390623105cac83bb612d1107f3121d83565610cc7199294'
 if hashlib.sha256(target.read_bytes()).hexdigest() != expected:
     raise SystemExit('Server changed concurrently; fetch and reapply the additive patch')
 pid = int(subprocess.check_output(['systemctl', 'show', 'swr-push-helper', '-p', 'MainPID', '--value']))

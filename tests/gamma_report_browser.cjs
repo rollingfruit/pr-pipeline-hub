@@ -5,6 +5,8 @@ const path = require('node:path');
 
 (async () => {
     const id = process.argv[2];
+    const suite = process.argv[3] || 'E02';
+    if (!/^E0[1-6]$/.test(suite)) throw Error('Registered suite required');
     if (!/^gamma-check-[a-zA-Z0-9-]+$/.test(id || '')) throw Error('Diagnostic run ID required');
     const token = fs.readFileSync('/etc/pr-e2e/secrets/worker-token', 'utf8').trim();
     const output = '/var/lib/pr-e2e/gamma-ui-qa';
@@ -26,8 +28,8 @@ const path = require('node:path');
             await expect(page.getByRole('heading', {name: '实测环境镜像'})).toBeVisible();
             await page.getByRole('button', {name: 'E2E 证据', exact: true}).click();
             await expect(page.getByRole('heading', {name: '当前环境执行证据'})).toBeVisible();
-            await page.getByRole('button', {name: /^E02 /}).click();
-            await expect(page.locator('.evidence-tool h3')).toContainText('E02');
+            await page.getByRole('button', {name: new RegExp('^'+suite+' ')}).first().click();
+            await expect(page.locator('.evidence-tool h3')).toContainText(suite);
             const image = page.locator('.evidence-grid img');
             if (await image.count()) await expect.poll(() => image.evaluate(e => e.naturalWidth)).toBeGreaterThan(0);
             const video = page.locator('.evidence-grid video');

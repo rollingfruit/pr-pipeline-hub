@@ -13,6 +13,10 @@ sys.path.insert(0, '/opt/swr-push-helper')
 import server
 
 old = json.loads((server.LOG_DIR / 'job-82cf0e6101c8.json').read_text())
+if '--all-suites' in sys.argv:
+    old['optional_steps']['gamma_suites'] = ['E01', 'E02', 'E03', 'E04', 'E05', 'E06']
+if '--extra-suites' in sys.argv:
+    old['optional_steps']['gamma_suites'] = ['E04', 'E05', 'E06']
 job_id = uuid.uuid4().hex[:12]
 job = {**old, 'id': job_id, 'operator': 'CI-operator-acceptance', 'client_id': '',
        'created_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'finished_at': '',
