@@ -267,7 +267,7 @@ class E2ERunner:
             shutil.copytree(self.stack.HERE / "playwright", harness,
                             ignore=shutil.ignore_patterns("node_modules", "results", "test-results"))
             (harness / "node_modules").symlink_to(self.stack.STATE / "playwright/node_modules", target_is_directory=True)
-        env = {**(self.env or os.environ), "E2E_SETTINGS": str(self.stack.STATE / "settings.json"),
+        env = {**(self.env or os.environ), "E2E_SETTINGS": os.environ.get('E2E_SETTINGS_FILE', str(self.stack.STATE / "settings.json")),
                "E2E_RUN_ID": self.run["id"], "E2E_SUITE": suite, "E2E_OUTPUT": str(directory),
                "E2E_APP_URL": "http://localhost:18066", "E2E_BASELINE": "1" if baseline else "0"}
         try:

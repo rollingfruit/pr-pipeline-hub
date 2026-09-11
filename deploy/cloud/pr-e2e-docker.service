@@ -1,0 +1,21 @@
+[Unit]
+Description=Isolated PR E2E Docker engine
+After=network-online.target
+Wants=network-online.target
+Requires=pr-e2e.slice
+
+[Service]
+Type=notify
+Slice=pr-e2e.slice
+ExecStartPre=/usr/local/lib/pr-e2e-network.sh
+ExecStart=/usr/bin/dockerd --config-file=/etc/pr-e2e/docker.json
+Restart=on-failure
+RestartSec=10
+Delegate=yes
+KillMode=process
+TimeoutStartSec=120
+LimitNOFILE=1048576
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

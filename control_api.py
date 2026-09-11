@@ -5,8 +5,10 @@ import hmac
 import json
 import os
 import re
+from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
@@ -33,7 +35,15 @@ def create_app(store=None, archive=None):
     @app.middleware('http')
     async def authentication(request, call_next):
         path = request.url.path
-        if path not in {'/api/health', '/webhooks/github'} and not path.startswith('/internal/'):
+        public_read = os.environ.get('PIPELINE_PUBLIC_READ', '').lower() == 'true' and request.method in {'GET', 'HEAD'}
+        if public_read and request.query_params.get('access_token'):
+            query = urlencode([(key,value) for key,value in request.query_params.multi_items() if key != 'access_token'])
+            response = RedirectResponse(path + ('?' + query if query else ''), status_code=303)
+            response.delete_cookie('pipeline_view_http')
+            response.headers['Cache-Control'] = 'no-store'
+            response.headers['Referrer-Policy'] = 'no-referrer'
+            return response
+        if not public_read and path not in {'/api/health', '/webhooks/github'} and not path.startswith('/internal/'):
             token = os.environ.get('PIPELINE_VIEW_TOKEN', '')
             supplied = request.headers.get('x-pipeline-view-token') or request.query_params.get('access_token') or request.cookies.get('pipeline_view_http', '')
             if not token or not hmac.compare_digest(token, supplied):
@@ -62,13 +72,57 @@ def create_app(store=None, archive=None):
         saved = archive.get_run(run_id)
         if not saved and not live:
             raise HTTPException(404, 'Run not found')
-        return enrich({**(saved or {}), **(live or {})}, archive.runs_dir)
+        merged={**(saved or {}), **(live or {})}
+        if saved and (saved.get('publication') or {}).get('status')=='published':
+            try:
+                archived=datetime.fromisoformat(saved['publication']['at'].replace('Z','+00:00'))
+                previous=(live or {}).get('publication') or {}
+                at=previous.get('at')
+                if not at or archived>=datetime.fromisoformat(at.replace('Z','+00:00')):
+                    merged['publication']=saved['publication']
+            except (ValueError,KeyError,TypeError):
+                pass
+        return enrich(merged, archive.runs_dir)
 
     @app.get('/api/health')
     def health():
-        return {'status': 'ok', 'runner': 'Local WSL / ECS control plane', 'read_only': True,
+        state_file=archive.runs_dir.parent/'worker-state.json'
+        try:worker_state=json.loads(state_file.read_text())
+        except (OSError,ValueError):worker_state=None
+        return {'status': 'ok', 'runner': 'Cloud control plane' if os.environ.get('PIPELINE_CLOUD_PROFILE')=='1' else 'Local WSL / ECS control plane', 'read_only': True,
+                'worker_state':worker_state,
+                'editor_url':os.environ.get('PIPELINE_EDITOR_URL','http://127.0.0.1:8793/'),
+                'cloud_profile':os.environ.get('PIPELINE_CLOUD_PROFILE')=='1',
                 'public_base_url': archive.public_base_url, 'shareable_links': True,
-                'observation_mode': True}
+                'observation_mode': True, 'public_read': os.environ.get('PIPELINE_PUBLIC_READ', '').lower() == 'true'}
+
+    @app.post('/internal/worker-state')
+    async def worker_state(request: Request):
+        internal(request)
+        body=await request.body()
+        if len(body)>8192:raise HTTPException(413)
+        value=json.loads(body)
+        if not isinstance(value,dict) or not isinstance(value.get('resource'),dict):raise HTTPException(400)
+        from pr_pipeline_hub import atomic_json,utc_now
+        saved={'worker':str(value.get('worker',''))[:100],'resource':value['resource'],'checked_at':utc_now()}
+        atomic_json(archive.runs_dir.parent/'worker-state.json',saved)
+        return {'ok':True}
+
+    @app.post('/internal/artifacts')
+    async def artifact_upload(request: Request):
+        internal(request)
+        import tempfile
+        import tarfile
+        from share_viewer import ingest
+        total=0
+        with tempfile.TemporaryFile() as stream:
+            async for chunk in request.stream():
+                total+=len(chunk)
+                if total>2*1024**3:raise HTTPException(413,'Compressed archive exceeds 2 GiB')
+                stream.write(chunk)
+            stream.seek(0)
+            try:return await asyncio.to_thread(ingest,archive.runs_dir.parent,stream)
+            except (ValueError,OSError,tarfile.TarError,KeyError,TypeError) as error:raise HTTPException(400,'Invalid artifact archive') from error
 
     @app.post('/webhooks/github')
     async def webhook(request: Request):
@@ -107,6 +161,34 @@ def create_app(store=None, archive=None):
     @app.get('/api/e2e/suites')
     def suites():
         return {'suites': CATALOG}
+
+    @app.get('/api/batches')
+    def batches():
+        return {'batches':[r for r in listing()['runs'] if r.get('kind')=='batch']}
+
+    @app.get('/api/batches/{batch_id}')
+    def batch_detail(batch_id: str):
+        value=detail(batch_id)
+        if value.get('kind')!='batch':raise HTTPException(404)
+        return value
+
+    @app.post('/internal/batches')
+    async def batch_submit(request: Request):
+        internal(request)
+        from batch_store import create
+        try:
+            return await asyncio.to_thread(create,store,await request.json())
+        except (ValueError,KeyError,TypeError) as error:
+            raise HTTPException(400,str(error))
+
+    @app.post('/internal/artifact-batches')
+    async def artifact_submit(request: Request):
+        internal(request)
+        from artifact_batches import create
+        try:
+            return await asyncio.to_thread(create,store,await request.json())
+        except (ValueError,KeyError,TypeError) as error:
+            raise HTTPException(400,str(error))
 
     @app.get('/api/monitors')
     def monitors():
@@ -239,6 +321,9 @@ def create_app(store=None, archive=None):
     @app.get('/capabilities')
     @app.get('/runners')
     @app.get('/reviews')
+    @app.get('/batches')
+    @app.get('/history')
+    @app.get('/batches/{run_id}')
     def frontend(run_id: str = ''):
         return FileResponse(ROOT / 'web/dist/index.html', headers={'Cache-Control':'no-store'})
 

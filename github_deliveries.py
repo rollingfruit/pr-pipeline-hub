@@ -8,6 +8,11 @@ from pr_pipeline_hub import redact
 
 def send(hub, item):
     run = item['run']
+    if item['channel'].startswith('batch_'):
+        member=next(m for m in run['members'] if str(m['repo_id'])==item['channel'].split(':')[1])
+        item={**item,'channel':'github_status' if item['channel'].startswith('batch_status:') else 'github_comment',
+              'run':{**run,**member,'title':run['title']}}
+        run=item['run']
     repo = run['repo']
     if item['channel'] == 'newlink':
         from newlink_delivery import send as send_newlink
@@ -19,8 +24,10 @@ def send(hub, item):
     else:
         state = run.get('failure_kind') or ('success' if run.get('conclusion')=='success' else 'error')
     url = hub._run_web_url(hub.public_base_url,run['id'])
+    if run.get('kind')=='batch':url=hub.public_base_url.rstrip('/')+'/batches/'+run['id']
     if item['channel'] == 'github_status':
         context = 'newlink/e2e-local'
+        if run.get('kind')=='batch':context='newlink/batch-'+('core-' if run['full_acceptance'] else 'partial-')+run['combination_key']
         # Reconcile an ambiguous successful POST before sending another status.
         statuses = hub._gh_json(['api', f"repos/{repo}/commits/{run['head_sha']}/statuses?per_page=100"])
         description = f"E2E {state}; run {run['id']}"
@@ -39,6 +46,9 @@ def send(hub, item):
         '代码风险：'+(review.get('summary','检视尚未完成，风险未知')),
         f'[流水线与证据]({url})',
         '此结果不代表已启用强制合入门禁；测试、检视、报告和群通知分别核对。'])
+    if run.get('kind')=='batch':
+        body+='\n\n联合版本：\n'+'\n'.join(f"- {m['repo']} #{m['pr_number']} head `{m['head_sha']}` / base `{m['base_sha']}`" for m in run['members'])
+        body+='\n\n配置：'+json.dumps(run['options'],ensure_ascii=False)+'\n结果只适用于此组合和所选用例，不证明单个 PR 独立合入安全。'
     pages = hub._gh_json(['api',f"repos/{repo}/issues/{run['pr_number']}/comments?per_page=100",'--paginate','--slurp'])
     identity = hub._gh_json(['api','user'])['id']
     previous = next((c for page in pages for c in page if marker in c.get('body','') and c.get('user',{}).get('id')==identity),None)

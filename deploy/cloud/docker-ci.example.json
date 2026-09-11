@@ -1,0 +1,17 @@
+{
+  "hosts": ["unix:///run/pr-e2e/docker.sock"],
+  "group": "pr-e2e",
+  "data-root": "/var/lib/pr-e2e-docker",
+  "exec-root": "/run/pr-e2e/exec",
+  "pidfile": "/run/pr-e2e/docker.pid",
+  "bridge": "e2ebr0",
+  "default-address-pools": [{"base": "172.29.0.0/16", "size": 24}],
+  "iptables": false,
+  "ip6tables": false,
+  "ip-masq": false,
+  "userland-proxy": true,
+  "cgroup-parent": "/pr.slice/pr-e2e.slice",
+  "exec-opts": ["native.cgroupdriver=cgroupfs"],
+  "log-driver": "json-file",
+  "log-opts": {"max-size": "10m", "max-file": "3"}
+}

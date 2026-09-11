@@ -4,3 +4,8 @@ __pycache__/
 .runtime/
 
 design/
+release/
+verification/batches/
+web/node_modules/
+verification/cloud/
+web/dist/

@@ -1,0 +1,36 @@
+name: pr-pipeline-control
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.9}
+    environment:
+      POSTGRES_DB: prpipeline
+      POSTGRES_USER: prpipeline
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets: [postgres-password]
+    ports: ["127.0.0.1:5439:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U prpipeline -d prpipeline"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+  control:
+    image: ${PIPELINE_CONTROL_IMAGE:?Set an immutable control image tag/digest}
+    network_mode: host
+    depends_on:
+      postgres: {condition: service_healthy}
+    volumes:
+      - /etc/pr-pipeline:/etc/pr-pipeline:ro
+      - /var/lib/pr-pipeline/archives:/var/lib/pr-pipeline/archives
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8792/api/health',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+secrets:
+  postgres-password:
+    file: /etc/pr-pipeline/secrets/postgres-password
+volumes:
+  postgres-data: {}

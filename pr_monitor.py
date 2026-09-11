@@ -7,6 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 from control_client import rpc
+from review_policy import REPOSITORIES
 from pr_pipeline_hub import PipelineHub, atomic_json, redact, utc_now
 
 ROOT=Path(__file__).resolve().parent
@@ -36,8 +37,9 @@ def transition(previous, current, initialized_at, baseline_ready=False):
 
 
 class Monitor:
-    def __init__(self, github, send=rpc, path=STATE):
+    def __init__(self, github, send=rpc, path=STATE, repo=REPO):
         self.github,self.send,self.path=github,send,path
+        self.repo=repo
         self.state=json.loads(path.read_text()) if path.exists() else {
             'initialized_at':utc_now(),'seen':{},'pending':[],'events_delivered':0}
 
@@ -49,7 +51,7 @@ class Monitor:
         if sockets:
             os.environ['WSL_INTEROP']=str(sockets[-1])
         if 'repository' not in self.state:
-            meta=self.github(['api','repos/'+REPO])
+            meta=self.github(['api','repos/'+self.repo])
             self.state['repository']={'id':meta['id'],'full_name':meta['full_name']}
         repo=self.state['repository']
         pages=self.github(['api',f"repos/{repo['full_name']}/pulls?state=all&per_page=100&sort=created&direction=desc",'--paginate','--slurp'])
@@ -84,14 +86,14 @@ class Monitor:
 
     def status(self):
         return {key:self.state.get(key) for key in ('initialized_at','checked_at','latest','status','error','events_delivered','last_receipt')} | {
-            'repo':self.state.get('repository',{}).get('full_name',REPO),'interval_seconds':60,'pending_events':len(self.state['pending']),
+            'repo':self.state.get('repository',{}).get('full_name',self.repo),'interval_seconds':60,'pending_events':len(self.state['pending']),
             'pull_requests':sorted(self.state['seen'].values(),key=lambda p:p['number'],reverse=True),
-            'mode':'ecs_queue' if (ROOT/'.runtime/ecs-worker.enabled').exists() else 'ingest_only',
-            'execution_status':('ECS 单队列已启用；本机 Codex 检视 + WSL E2E；本阶段不依赖 NewLink'
-                if (ROOT/'.runtime/ecs-worker.enabled').exists() else 'Agent 调度与 ECS 队列执行器尚未接通')}
+            'mode':'discovery_only',
+            'execution_status':'仅发现与更新 PR；需在本机选择联合批次后执行，不自动检视或回写'}
 
     def report(self):
-        self.send('/internal/monitors/governance-local-poll',self.status())
+        name='governance-local-poll' if self.repo==REPO else self.repo.split('/')[-1].replace('_','-')+'-local-poll'
+        self.send('/internal/monitors/'+name,self.status())
 
 
 def main():
@@ -122,23 +124,27 @@ WantedBy=multi-user.target
     lock=STATE.with_suffix('.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
     hub=PipelineHub(STATE.parent/'cli-helper')
-    monitor=Monitor(hub._gh_json)
+    monitors=[Monitor(hub._gh_json,path=STATE if name=='agent-governance-gw' else STATE.parent/(name+'.json'),
+                      repo='rollingfruit/'+name) for name in REPOSITORIES if name!='mattermost']
     while True:
-        try:
-            result=monitor.tick()
-            print(json.dumps({'status':result['status'],'latest_pr':(result['latest'] or {}).get('number'),
-                'checked_at':result['checked_at'],'events_delivered':result['events_delivered']},ensure_ascii=False),flush=True)
-        except Exception as error:
-            monitor.state.update(status='degraded',error=redact(str(error))[:600])
-            monitor.save()
+        failures=[]
+        for monitor in monitors:
             try:
-                monitor.report()
-            except Exception:
-                pass
-            if args.once:
-                raise
-            print('Monitor degraded: '+redact(str(error))[:200],flush=True)
+                result=monitor.tick()
+                print(json.dumps({'repo':monitor.repo,'status':result['status'],
+                    'checked_at':result['checked_at'],'events_delivered':result['events_delivered']},ensure_ascii=False),flush=True)
+            except Exception as error:
+                failures.append(monitor.repo)
+                monitor.state.update(status='degraded',error=redact(str(error))[:600])
+                monitor.save()
+                try:
+                    monitor.report()
+                except Exception:
+                    pass
+                print('Monitor degraded: '+monitor.repo+' '+redact(str(error))[:200],flush=True)
         if args.once:
+            if failures:
+                raise RuntimeError('Failed monitors: '+', '.join(failures))
             return
         time.sleep(60)
 

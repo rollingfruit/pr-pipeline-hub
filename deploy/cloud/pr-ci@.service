@@ -1,0 +1,27 @@
+[Unit]
+Description=CI E2E %i
+After=network-online.target pr-e2e-docker.service
+Requires=pr-e2e-docker.service
+
+[Service]
+User=pr-e2e
+Group=pr-e2e
+Slice=pr-e2e.slice
+WorkingDirectory=/opt/pr-pipeline-ci
+Environment=PATH=/opt/pr-pipeline-tools/bin:/opt/pr-pipeline-ci/.venv/bin:/var/lib/pr-e2e/state/tools/go1.26.5/bin:/var/lib/pr-e2e/state/tools/node24.18.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/pr-e2e
+Environment=GOPROXY=https://goproxy.cn,direct
+Environment=SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+Environment=NODE_EXTRA_CA_CERTS=/etc/pki/tls/certs/ca-bundle.crt
+Environment=DOCKER_CONFIG=/var/lib/pr-e2e/state/docker-config
+ExecStart=/opt/pr-pipeline-ci/.venv/bin/python /opt/pr-pipeline-ci/cloud_entry.py --config /etc/pr-e2e/config.toml %i
+Restart=on-failure
+RestartSec=15
+KillMode=control-group
+TimeoutStopSec=45
+OOMScoreAdjust=500
+UMask=0007
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

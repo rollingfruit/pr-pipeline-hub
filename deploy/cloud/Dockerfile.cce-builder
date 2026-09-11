@@ -1,0 +1,10 @@
+FROM local/ai-python-build:3.11.15-v1
+RUN sed -i 's/ main$/ main universe/' /etc/apt/sources.list && apt-get update && apt-get install -y --no-install-recommends \
+    rsync jq curl wget unzip xz-utils zstd procps file pkg-config \
+    autoconf automake libtool nasm cmake libpng-dev libjpeg-dev webp \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker /usr/local/bin/docker
+COPY docker-buildx /root/.docker/cli-plugins/docker-buildx
+COPY cce-builder-entry.sh /usr/local/bin/cce-builder-entry
+RUN chmod 755 /usr/local/bin/docker /root/.docker/cli-plugins/docker-buildx /usr/local/bin/cce-builder-entry
+ENTRYPOINT ["/usr/local/bin/cce-builder-entry"]

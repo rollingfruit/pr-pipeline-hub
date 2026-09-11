@@ -1,0 +1,22 @@
+[Unit]
+Description=PR Pipeline %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prpipeline
+Group=prpipeline
+SupplementaryGroups=docker
+WorkingDirectory=/opt/pr-pipeline
+ExecStart=/opt/pr-pipeline/.venv/bin/python /opt/pr-pipeline/cloud_entry.py --config /etc/pr-pipeline/config.toml %i
+Restart=on-failure
+RestartSec=15
+UMask=0007
+KillMode=control-group
+TimeoutStopSec=30
+# Candidate builds can execute code with Docker daemon privileges.
+# Deploy only on a dedicated build host, never a shared production node.
+
+[Install]
+WantedBy=multi-user.target

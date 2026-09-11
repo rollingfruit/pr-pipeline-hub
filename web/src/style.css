@@ -818,3 +818,21 @@ select {
     max-height: 230px;
   }
 }
+.create-validation {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: white;
+  background: #007d88;
+  border-radius: 4px;
+  text-decoration: none;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.create-validation:hover { background: #00636d; }
+@media (max-width: 760px) {
+  .top { flex-wrap: wrap; height: auto; min-height: 64px; gap: 8px; }
+  .top > div { flex-wrap: wrap; }
+}

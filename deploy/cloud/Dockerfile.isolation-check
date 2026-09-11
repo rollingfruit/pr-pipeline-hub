@@ -1,0 +1,2 @@
+FROM docker.1ms.run/library/alpine:3.22
+RUN cat /proc/self/cgroup

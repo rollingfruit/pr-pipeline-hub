@@ -23,11 +23,14 @@ def ingest(root, stream):
     with tempfile.TemporaryDirectory(dir=root, prefix="incoming-") as temp:
         dest = Path(temp)
         total = 0
+        members = set()
         with tarfile.open(fileobj=stream, mode="r|gz") as archive:
             for member in archive:
                 path = dest / member.name
-                if not member.isfile() or not path.resolve().is_relative_to(dest) or member.size > 1024**3:
+                normalized = path.resolve()
+                if normalized in members or not member.isfile() or not normalized.is_relative_to(dest) or member.size > 1024**3:
                     raise ValueError("Unsafe archive member")
+                members.add(normalized)
                 total += member.size
                 if total > 4 * 1024**3:
                     raise ValueError("Archive too large")
@@ -40,6 +43,11 @@ def ingest(root, stream):
         run_id = manifest["run_id"]
         if not re.fullmatch(r"[A-Za-z0-9-]+", run_id):
             raise ValueError("Invalid run ID")
+        expected = {(dest / name).resolve() for name in manifest['files']} | {(dest/'manifest.json').resolve()}
+        if members != expected or 'run.json' not in manifest['files']:
+            raise ValueError('Manifest must cover every artifact')
+        if json.loads((dest/'run.json').read_text()).get('id') != run_id:
+            raise ValueError('Run identity mismatch')
         for name, digest in manifest["files"].items():
             path = dest / name
             if not path.resolve().is_relative_to(dest) or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
@@ -52,7 +60,7 @@ def ingest(root, stream):
         shutil.move(str(dest), version)
         runs = root / "runs"
         runs.mkdir(exist_ok=True)
-        link = runs / (run_id + ".next")
+        link = runs / (run_id + '.' + secrets.token_hex(8) + ".next")
         link.symlink_to(version, target_is_directory=True)
         link.replace(runs / run_id)
         # Keep the prior snapshot briefly so in-flight browser requests remain valid.
@@ -60,7 +68,9 @@ def ingest(root, stream):
         for old in versions.iterdir():
             if old != version and time.time() - old.stat().st_mtime > 3600:
                 shutil.rmtree(old)
-    print(json.dumps({"run_id": run_id, "published_at": utc_now(), "files": len(manifest["files"])}))
+    receipt={"run_id": run_id, "published_at": utc_now(), "files": len(manifest["files"])}
+    print(json.dumps(receipt))
+    return receipt
 
 
 class ArchiveHub:
@@ -82,8 +92,10 @@ class ArchiveHub:
                 {'phase': p.relative_to(artifacts).parts[0], 'suite': p.relative_to(artifacts).parts[1],
                  'url': '/artifacts/' + run_id + '/' + p.relative_to(artifacts).as_posix()}
                 for p in sorted(artifacts.glob('*/*/test-results/**/trace.zip'))]
+            manifest_path = self.runs_dir / run_id / 'manifest.json'
+            manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
             value["archive"] = {"read_only": True, "synced_at": value.get("archive_synced_at"),
-                                "execution_location": "Local WSL"}
+                                "execution_location": manifest.get('execution_location', 'Local WSL')}
             return value
         except (FileNotFoundError, json.JSONDecodeError):
             return None

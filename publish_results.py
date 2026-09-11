@@ -1,4 +1,4 @@
-"""Upload local Pipeline results over SSH; never run builds on ECS."""
+"""Publish sanitized Pipeline evidence through the authenticated control channel."""
 import argparse
 import hashlib
 import io
@@ -12,6 +12,7 @@ import time
 import urllib.request
 from pathlib import Path
 from pr_pipeline_hub import atomic_json, redact, utc_now
+from evidence_redaction import known_secrets, sanitize
 
 
 def inputs(root, completed):
@@ -34,14 +35,15 @@ def publish(config, run_id):
     run["web_url"] = config["public_base_url"] + "/runs/" + run_id
     run["local_url"] = config["local_base_url"] + "/runs/" + run_id
     run["archive_synced_at"] = utc_now()
-    run.pop("publication", None)
-    files = {"run.json": json.dumps(run, ensure_ascii=False).encode()}
+    run['publication']={'status':'published','at':run['archive_synced_at'],'web_url':run['web_url']}
+    secrets=known_secrets(root)
+    files = {"run.json": sanitize(json.dumps(run, ensure_ascii=False).encode(),secrets)}
     for path in inputs(root, run["status"] not in {"queued", "running"}):
         data = path.read_bytes()
         if path.suffix == ".log":
             data = redact(data.decode("utf-8", errors="replace")).encode()
-        files[path.relative_to(root).as_posix()] = data
-    manifest = {"run_id": run_id, "published_at": utc_now(), "execution_location": "Local WSL",
+        files[path.relative_to(root).as_posix()] = sanitize(data,secrets)
+    manifest = {"run_id": run_id, "published_at": utc_now(), "execution_location": os.environ.get('PIPELINE_EXECUTION_LOCATION','Local WSL'),
                 "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
     files["manifest.json"] = json.dumps(manifest).encode()
     with tempfile.TemporaryFile() as archive:
@@ -52,6 +54,22 @@ def publish(config, run_id):
                 info.mode = 0o600
                 tar.addfile(info, io.BytesIO(data))
         archive.seek(0)
+        if config.get('control_url'):
+            length=archive.seek(0,2);archive.seek(0)
+            request=urllib.request.Request(config['control_url'].rstrip('/')+'/internal/artifacts',archive,
+                {'Content-Type':'application/gzip','Content-Length':str(length),
+                 'X-Worker-Token':os.environ['PIPELINE_WORKER_TOKEN']})
+            with opener.open(request,timeout=900) as response:
+                receipt=json.load(response)
+            if receipt.get('run_id')!=run_id:raise RuntimeError('Archive receipt mismatch')
+        else:
+            publish_ssh(config,archive)
+    atomic_json(root / "publication.json", {"status": "published", "at": utc_now(),
+                "web_url": run["web_url"], "file_count": len(files), "manifest_sha256": hashlib.sha256(files["manifest.json"]).hexdigest()})
+    print(run_id, "published", len(files), flush=True)
+
+
+def publish_ssh(config, archive):
         command = [config["ssh_executable"], "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
                    config["ssh_host"], "/usr/local/bin/python3.11 /opt/pr-e2e-share/share_viewer.py ingest"]
         sockets = sorted(Path('/run/WSL').glob('*_interop'), key=lambda p: p.stat().st_mtime)
@@ -60,9 +78,6 @@ def publish(config, run_id):
         result = subprocess.run(command, stdin=archive, capture_output=True, timeout=900)
         if result.returncode:
             raise RuntimeError(result.stderr.decode(errors="replace")[-1000:])
-    atomic_json(root / "publication.json", {"status": "published", "at": utc_now(),
-                "web_url": run["web_url"], "file_count": len(files), "manifest_sha256": hashlib.sha256(files["manifest.json"]).hexdigest()})
-    print(run_id, "published", len(files), flush=True)
 
 
 def fingerprint(root):

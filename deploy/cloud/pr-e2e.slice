@@ -1,0 +1,9 @@
+[Unit]
+Description=Aggregate PR E2E resource budget
+
+[Slice]
+CPUAccounting=true
+MemoryAccounting=true
+CPUQuota=200%
+MemoryLimit=10G
+TasksMax=4096

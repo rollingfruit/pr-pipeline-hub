@@ -1,0 +1,34 @@
+version = 1
+# Public access must terminate TLS at an ELB/Ingress/reverse proxy.
+allow_private_http = false
+submit_user = "operator"
+editor_bind = "127.0.0.1"
+git_proxy = ""
+docker_bridge = "172.17.0.1"
+repositories = ["rollingfruit/agent-governance-gw", "rollingfruit/multica-aiwelink", "rollingfruit/AgentLink", "rollingfruit/service_router", "rollingfruit/CellMem", "rollingfruit/semantic-gateway", "rollingfruit/semantic-schedule", "rollingfruit/aiwelink-temporal", "rollingfruit/skills-market", "rollingfruit/public-service", "rollingfruit/observability"]
+
+[urls]
+public = "https://pipeline.example.com"
+# Same-host Linux profile. For a separate Worker use the private HTTPS endpoint.
+control = "http://127.0.0.1:8792"
+
+[paths]
+workspace = "/var/lib/pr-pipeline/workspace"
+state = "/var/lib/pr-pipeline/e2e"
+data = "/var/lib/pr-pipeline/data"
+archives = "/var/lib/pr-pipeline/archives"
+stack = "/opt/pr-pipeline/stack"
+runtime_settings = "/var/lib/pr-pipeline/e2e/settings.json"
+
+[features]
+code_review = false
+github_write = false
+monitor = false
+newlink = false
+
+[secrets]
+worker_token = "/etc/pr-pipeline/secrets/worker-token"
+submit_password = "/etc/pr-pipeline/secrets/submit-password"
+database_url = "/etc/pr-pipeline/secrets/database-url"
+# Optional when native gh already has persistent browser-login credentials.
+# github_token = "/etc/pr-pipeline/secrets/github-token"

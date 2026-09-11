@@ -1,0 +1,14 @@
+{
+  "GM_BACKEND": "codex-cli-chatgpt",
+  "GM_MODEL": "",
+  "GM_API_KEY": "",
+  "GM_BASE_URL": "",
+  "CODEX_HOME": "/var/lib/pr-pipeline/e2e/codex-home",
+  "CODEX_MODEL": "",
+  "TEST_ADMIN_USER": "pr-e2e-admin",
+  "TEST_ADMIN_PASSWORD": "",
+  "RUNTIME_ID": "",
+  "WORKSPACE_ID": "",
+  "DAEMON_ID": "",
+  "TEST_WORKSPACE": "/var/lib/pr-pipeline/e2e/agent-workspace"
+}

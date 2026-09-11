@@ -19,8 +19,10 @@ import {
   GitBranch,
   Search,
   Activity,
+  Plus,
 } from "lucide-react";
 import "./style.css";
+import { IncrementalBoard } from './IncrementalBoard';
 
 type Stage = {
   id: string;
@@ -40,7 +42,14 @@ type Case = {
   errors: string[];
   attachments: Attachment[];
 };
-type Run = {
+export type Run = {
+  full_acceptance?: boolean;
+  kind?: string;
+  source_mode?: string;
+  build_url?: string;
+  members?: {repo:string;repo_id?:number;pr_number:number;pr_url:string;head_sha:string;base_sha:string}[];
+  options?: {codex_review:boolean;baseline_enabled:boolean;github_write:boolean};
+  version_checks?: {repo:string;expected_head:string;actual_head:string;expected_base:string;actual_base:string;state:string}[];
   id: string;
   repo: string;
   pr_number: number;
@@ -79,6 +88,8 @@ type Run = {
     state?: string;
     ok?: boolean;
     error?: string;
+    url?: string;
+    phase?: string;
   }[];
   policy?: { coverage_gaps: string[] };
   archive?: { synced_at: string };
@@ -107,11 +118,18 @@ function safeUrl(value?: string) {
   }
 }
 function time(s?: number) {
-  return s === undefined
+  return s == null
     ? "—"
     : s < 60
       ? `${s}s`
       : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+function deliveryLabel(run: Run, channel: string) {
+  if (channel.startsWith('batch_')) {
+    const member=run.members?.find(m=>String(m.repo_id)===channel.split(':')[1]);
+    return `${member?.repo.split('/').pop() || 'PR'} #${member?.pr_number || ''} ${channel.startsWith('batch_status:')?'检查状态':'摘要评论'}`;
+  }
+  return ({github_status:'GitHub 状态',github_comment:'PR 摘要评论',newlink:'蓝区编码演示'} as Record<string,string>)[channel] || channel;
 }
 function state(r: {
   status?: string;
@@ -172,7 +190,7 @@ function App() {
     [catalog, setCatalog] = useState<Suite[]>([]),
     [current, setCurrent] = useState<Run>(),
     [page, setPage] = useState(
-      location.pathname.startsWith("/runs/") ? "detail" : location.pathname==='/reviews'?'reviews':location.pathname==='/runners'?'runners':location.pathname==='/capabilities'?'capabilities':"overview",
+      /^\/(runs|batches)\//.test(location.pathname) ? "detail" : location.pathname==='/history'?'overview':location.pathname==='/reviews'?'reviews':location.pathname==='/runners'?'runners':location.pathname==='/capabilities'?'capabilities':"batches",
     ),
     [tab, setTab] = useState("总览"),
     [selected, setSelected] = useState(""),
@@ -180,7 +198,7 @@ function App() {
     [error, setError] = useState(""),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("全部"),
-    [health, setHealth] = useState<{ runner?: string; read_only?: boolean }>(
+    [health, setHealth] = useState<{ runner?: string; read_only?: boolean; editor_url?:string; cloud_profile?:boolean }>(
       {},
     ),
     [caseKey, setCaseKey] = useState("");
@@ -196,7 +214,7 @@ function App() {
       setCatalog(c.suites);
       setHealth(h);
       setMonitors(m.monitors);
-      const id = location.pathname.startsWith("/runs/")
+      const id = /^\/(runs|batches)\//.test(location.pathname)
         ? location.pathname.split("/")[2]
         : current?.id;
       if (id) setCurrent(await api<Run>(`/api/runs/${id}`));
@@ -248,13 +266,13 @@ function App() {
     const back = () => {
       const p = location.pathname;
       setPage(
-        p.startsWith("/runs/")
+        /^\/(runs|batches)\//.test(p)
           ? "detail"
-          : p === "/reviews" ? "reviews" : p === "/capabilities"
+          : p === "/history" ? "overview" : p === "/reviews" ? "reviews" : p === "/capabilities"
             ? "capabilities"
             : p === "/runners"
               ? "runners"
-              : "overview",
+              : "batches",
       );
       refresh();
     };
@@ -262,7 +280,7 @@ function App() {
     return () => removeEventListener("popstate", back);
   }, []);
   function open(r: Run) {
-    history.pushState({}, "", `/runs/${r.id}`);
+    history.pushState({}, "", `/${r.kind==='batch'?'batches':'runs'}/${r.id}`);
     setCurrent(r);
     setPage("detail");
     setTab("总览");
@@ -274,7 +292,7 @@ function App() {
   }
   function nav(p: string) {
     setPage(p);
-    history.pushState({}, "", p === "overview" ? "/" : `/${p}`);
+    history.pushState({}, "", p === "overview" ? "/history" : `/${p}`);
   }
   const cases = current?.evidence_cases || [],
     picked =
@@ -452,8 +470,9 @@ function App() {
         </div>
         <nav>
           {[
-            [LayoutDashboard, "overview", "检视总览"],
-            [GitPullRequest, "reviews", "PR 检视"],
+            [LayoutDashboard, "batches", "联合验证"],
+            [GitPullRequest, "reviews", "PR 动态"],
+            [ListChecks, "overview", "执行记录"],
             [ShieldCheck, "capabilities", "关键能力"],
             [Server, "runners", "运行环境"],
           ].map(([Icon, id, name]) => {
@@ -461,7 +480,7 @@ function App() {
             return (
               <button
                 key={String(id)}
-                className={page === id || (page === 'detail' && id === 'reviews') ? "nav active" : "nav"}
+                className={page === id || (page === 'detail' && id === (current?.kind==='batch'?'batches':'overview')) ? "nav active" : "nav"}
                 onClick={() => nav(String(id))}
               >
                 <I size={19} />
@@ -481,15 +500,18 @@ function App() {
         <header className="top">
           <span>
             PR Pipeline Hub <ChevronRight size={14} />{" "}
-            {page === "detail" || page === 'reviews'
-              ? "PR 检视"
+            {page === 'batches' || (page==='detail'&&current?.kind==='batch') ? '联合验证' : page === "detail" || page === 'reviews'
+              ? "PR 动态"
               : page === "capabilities"
                 ? "关键能力"
                 : page === "runners"
                   ? "运行环境"
-                  : "检视总览"}
+                  : "执行记录"}
           </span>
           <div>
+            <a className="create-validation" href={safeUrl(health?.editor_url || 'http://127.0.0.1:8793/')}>
+              <Plus size={16} />新建 PR 验证
+            </a>
             <span className="observation">观察模式</span>
             <button className="icon" title="刷新" onClick={refresh}>
               <RefreshCw size={18} />
@@ -509,7 +531,7 @@ function App() {
                 <GitPullRequest size={26} />
                 <div>
                   <h1>
-                    #{current.pr_number} {current.title}
+                    {current.kind==='batch'?'联合验证':`#${current.pr_number}`} {current.title}
                   </h1>
                   <p>
                     {current.repo} · head{" "}
@@ -522,9 +544,17 @@ function App() {
               </div>
               <div className="pr-actions">
                 <Badge item={current} />
-                {links("GitHub PR", current.pr_url)}
+                {current.pr_url && links("GitHub PR", current.pr_url)}
+                {current.build_url && links("来源构建", current.build_url)}
               </div>
             </div>
+            {current.kind==='batch'&&<section className="page-content" style={{paddingTop:12,paddingBottom:12}}>
+              <div className="section-head"><h2>联合版本清单</h2><span>{current.full_acceptance?'核心集合验证':'局部验证'} · 不证明单个 PR 独立合入安全</span></div>
+              {current.source_mode==='artifact' && <p>构建产物验证：运行已交付的确切镜像；不代表 PR 合入验收，不修改 CCE 环境。</p>}
+              {current.members?.map(m=><p key={m.repo}>{m.pr_url ? links(`${m.repo} #${m.pr_number}`,m.pr_url) : m.repo} · head <code>{m.head_sha.slice(0,8)}</code> / base <code>{m.base_sha.slice(0,8)}</code></p>)}
+              <p className="muted">Codex 代码检视：{current.options?.codex_review?'启用':'未启用'} · 基线对照：{current.options?.baseline_enabled?'启用':'未启用'} · GitHub 回写：{current.options?.github_write?'启用':'未启用'}</p>
+              {current.version_checks?.filter(v=>v.expected_head!==v.actual_head||v.expected_base!==v.actual_base||v.state!=='open').map(v=><p className="error" key={v.repo}>{v.repo} 版本已过期 · head {v.expected_head.slice(0,8)} → {v.actual_head.slice(0,8)} · base {v.expected_base.slice(0,8)} → {v.actual_base.slice(0,8)} · {v.state}</p>)}
+            </section>}
             <div className="tabs">
               {["总览", "代码发现", "E2E 证据", "运行日志", "交付记录"].map(
                 (t) => (
@@ -703,8 +733,9 @@ function App() {
                     <h2>交付与回写</h2>
                     {current.deliveries?.map((d, i) => (
                       <div className="delivery" key={i}>
-                        <span>{d.channel}</span>
+                        <span>{deliveryLabel(current,d.channel)} · {d.phase==='queued'?'开始':'结果'}</span>
                         <b>{d.ok ? "已确认" : d.state || "尚无记录"}</b>
+                        {d.url&&<a href={safeUrl(d.url)} target="_blank" rel="noreferrer">查看评论 <ExternalLink size={12}/></a>}
                         {d.error && <p>{d.error}</p>}
                       </div>
                     ))}
@@ -739,7 +770,7 @@ function App() {
                     <AlertCircle size={17} /> 主要发现
                   </h3>
                   <p>
-                    {review?.summary ||
+                    {(current.options?.codex_review===false?'未启用代码检视，代码风险未评估。':review?.summary) ||
                       "尚未完成 Agent 代码检视。E2E 通过不等于代码审阅通过。"}
                   </p>
                   <h3>
@@ -756,13 +787,7 @@ function App() {
                   {current.deliveries?.map((d, i) => (
                     <div className="delivery compact" key={i}>
                       <span>
-                        {d.channel === "github_status"
-                          ? "GitHub 状态"
-                          : d.channel === "github_comment"
-                            ? "PR 摘要评论"
-                            : d.channel === "newlink"
-                              ? "蓝区编码演示"
-                              : d.channel}
+                        {deliveryLabel(current,d.channel)}
                       </span>
                       <b className={d.ok ? "pass" : "wait"}>
                         {d.ok
@@ -776,7 +801,7 @@ function App() {
                   <div className="agent">
                     <span className="avatar">X</span>
                     <div>
-                      xiao-commitor<small>消息与任务回执独立核对</small>
+                      {current.kind==='batch'?(health.cloud_profile?'Linux Worker':'本机 WSL Worker'):'xiao-commitor'}<small>{current.kind==='batch'?'本轮不包含 NewLink 投递验收':'消息与任务回执独立核对'}</small>
                     </div>
                   </div>
                 </section>
@@ -791,6 +816,17 @@ function App() {
               </aside>
             </div>
           </>
+        ) : page === 'batches' ? (
+          <section className="page-content"><div className="section-head"><h1>联合验证</h1><a href={safeUrl(health?.editor_url||'http://127.0.0.1:8793/')} target="_blank" rel="noreferrer">新建批次 <ExternalLink size={14}/></a></div>
+            <p className="muted">{health.cloud_profile?'云端提交 · 专用 Linux Worker · 单执行槽':'本机提交 · ECS 只读报告 · 单执行槽'}</p>
+            <h2 style={{marginTop:24}}>当前执行 / 等待队列</h2>
+            {runs.filter(r=>['running','queued'].includes(r.status)).map(r=><div className="delivery" key={r.id}><button className="text-button" onClick={()=>open(r)}>{r.title}</button><Badge item={r}/><span>队列 {r.queue_position||'—'}</span></div>)}
+            {!runs.some(r=>['running','queued'].includes(r.status))&&<p className="empty">当前没有执行或排队任务</p>}
+            <h2>批次记录</h2><div className="table-wrap"><table><thead><tr><th>批次</th><th>跨仓组合</th><th>用例 / 配置</th><th>结果</th></tr></thead><tbody>{runs.filter(r=>r.kind==='batch').map(r=><tr key={r.id}><td><button className="text-button" onClick={()=>open(r)}>{r.title}</button><small>{r.id}</small></td><td>{r.members?.map(m=><div key={m.repo}>{m.repo.split('/').pop()} #{m.pr_number}</div>)}</td><td>{r.suites?.map(s=>s.id).join(' / ')}<small>代码检视 {r.options?.codex_review?'开启':'关闭'} · 基线 {r.options?.baseline_enabled?'开启':'关闭'}</small></td><td><Badge item={r}/></td></tr>)}</tbody></table></div>
+            {!runs.some(r=>r.kind==='batch')&&<p className="empty">暂无联合验证批次</p>}
+          </section>
+        ) : page === 'reviews' ? (
+          <IncrementalBoard runs={runs} monitors={monitors} open={open} />
         ) : page === "capabilities" ? (
           <section className="page-content">
             <h1>关键能力与门禁</h1>
@@ -852,8 +888,8 @@ function App() {
         ) : page === "runners" ? (
           <section className="page-content">
             <h1>运行环境</h1>
-            <h2 style={{marginTop:24}}>GitHub 本地监听</h2>
-            <p><a href="http://127.0.0.1:8793/" target="_blank" rel="noreferrer">本机 PR 选择与入队</a></p>
+            <h2 style={{marginTop:24}}>GitHub PR 发现</h2>
+            <p><a href={safeUrl(health?.editor_url||'http://127.0.0.1:8793/')} target="_blank" rel="noreferrer">PR 选择与入队</a></p>
             {monitors.map(m=><section key={m.id} className="monitor-status">
               <div className="section-head"><h3>{m.repo}</h3><span className={`badge ${m.status==='watching'&&Date.now()-Date.parse(m.server_received_at||'')<180000?'pass':'warn'}`}>{m.status==='watching'&&Date.now()-Date.parse(m.server_received_at||'')<180000?'监听中':'监听异常或离线'}</span></div>
               <p>最近检查：{m.checked_at?new Date(m.checked_at).toLocaleString():'尚未检查'} · 每 60 秒 · 待同步事件 {m.pending_events}</p>
@@ -864,8 +900,8 @@ function App() {
               <Server size={32} />
               <div>
                 <h2>{health.runner || "尚未连接"}</h2>
-                <p>本机 WSL · 单执行槽</p>
-                <p>ECS 负责看板与报告；业务构建留在 WSL。</p>
+                <p>{health.cloud_profile?'Linux Worker · 单执行槽':'本机 WSL · 单执行槽'}</p>
+                <p>{health.cloud_profile?'云端控制面与专用构建机':'ECS 负责看板与报告；业务构建留在 WSL。'}</p>
               </div>
             </div>
             <h2>当前任务</h2>
@@ -883,7 +919,7 @@ function App() {
           </section>
         ) : (
           <section className="page-content">
-            <h1>检视总览</h1>
+            <h1>执行记录</h1>
             <div className="metrics">
               {[
                 ["排队中", runs.filter((r) => r.status === "queued").length],

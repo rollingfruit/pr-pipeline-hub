@@ -1,5 +1,6 @@
 """Loopback-only authenticated PR selection. All execution uses the ECS queue."""
 import argparse
+import base64
 import json
 import os
 import secrets
@@ -13,7 +14,14 @@ TOKEN = secrets.token_urlsafe(32)
 
 
 class Handler(BaseHTTPRequestHandler):
+    def cloud_authorized(self):
+        if os.environ.get('PIPELINE_CLOUD_PROFILE')!='1':return True
+        expected=base64.b64encode((os.environ.get('PIPELINE_SUBMIT_USER','operator')+':'+os.environ.get('PIPELINE_SUBMIT_PASSWORD','')).encode()).decode()
+        return bool(os.environ.get('PIPELINE_SUBMIT_PASSWORD')) and secrets.compare_digest(self.headers.get('Authorization',''),'Basic '+expected)
+
     def allowed(self):
+        if os.environ.get('PIPELINE_CLOUD_PROFILE')=='1':
+            return self.headers.get('Host')==urlsplit(os.environ['PIPELINE_EDITOR_URL']).netloc
         return self.headers.get('Host') in {'127.0.0.1:8793', 'localhost:8793'}
 
     def respond(self, status, body, content='application/json'):
@@ -24,12 +32,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'")
         self.send_header('Content-Length', str(len(data)))
+        if status==401:self.send_header('WWW-Authenticate','Basic realm="Pipeline submission", charset="UTF-8"')
         self.end_headers()
         self.wfile.write(data)
 
     def do_GET(self):
+        if not self.cloud_authorized():return self.respond(401,{'error':'Submitter login required'})
         if not self.allowed():
             return self.respond(403, {'error': 'Loopback host required'})
+        if self.path=='/api/catalog':
+            from e2e_catalog import CATALOG
+            from batches import SUPPORTED
+            from control_client import rpc
+            from cloud_config import enabled
+            return self.respond(200,{'suites':CATALOG,'supported':SUPPORTED,'monitors':rpc('/api/monitors')['monitors'],
+                'features':{key:enabled(key) for key in ('code_review','github_write')}})
         if self.path == '/api/prs':
             from pr_monitor import STATE, REPO
             state = json.loads(STATE.read_text())
@@ -37,21 +54,39 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'repo': REPO, 'checked_at': state.get('checked_at'), 'prs': prs})
         if self.path != '/':
             return self.respond(404, {})
-        return self.respond(200, PAGE.replace('__TOKEN__', TOKEN), 'text/html')
+        page=(ROOT/'static/batch-editor.html').read_text(encoding='utf-8').replace('__TOKEN__', TOKEN)
+        page=page.replace('__EDITOR_API_BASE__','/submit' if os.environ.get('PIPELINE_CLOUD_PROFILE')=='1' else '')
+        page=page.replace('http://119.8.233.58:8080/batches',os.environ.get('PIPELINE_PUBLIC_BASE_URL','http://119.8.233.58:8080').rstrip('/')+'/batches')
+        return self.respond(200,page,'text/html')
 
     def do_POST(self):
+        if not self.cloud_authorized():return self.respond(401,{'error':'Submitter login required'})
         if not self.allowed() or not secrets.compare_digest(self.headers.get('X-Selection-Token', ''), TOKEN):
             return self.respond(403, {'error': 'Local selection token required'})
         origin = self.headers.get('Origin')
-        if origin and origin not in {'http://127.0.0.1:8793', 'http://localhost:8793'}:
+        origins={'http://127.0.0.1:8793', 'http://localhost:8793'}
+        if os.environ.get('PIPELINE_CLOUD_PROFILE')=='1':
+            url=urlsplit(os.environ['PIPELINE_EDITOR_URL']);origins={url.scheme+'://'+url.netloc}
+        if origin and origin not in origins:
             return self.respond(403, {'error': 'Invalid origin'})
         try:
+            if self.path in {'/api/batches/resolve','/api/batches'}:
+                length=int(self.headers.get('Content-Length',0))
+                if not 0<length<=65536:return self.respond(413,{})
+                body=json.loads(self.rfile.read(length))
+                from batches import resolve,submit
+                if self.path.endswith('/resolve'):
+                    return self.respond(200,{'results':resolve(self.server.hub,body['urls'])})
+                result=submit(self.server.hub,body)
+                result['web_url']=self.server.hub.public_base_url.rstrip('/')+result['web_path']
+                return self.respond(200,result)
             if self.path != '/api/enqueue':
                 return self.respond(404, {})
             length = int(self.headers.get('Content-Length', 0))
             if not 0 < length <= 4096:
                 return self.respond(413, {})
             body = json.loads(self.rfile.read(length))
+            return self.respond(409,{'error':'单 PR 入队已停用，请创建联合验证批次'})
             from pr_monitor import REPO, STATE
             number = int(body['number'])
             state = json.loads(STATE.read_text())

@@ -30,4 +30,15 @@ def enrich(run, runs_dir):
     value.setdefault('deliveries', [{'channel': 'github_status', **value.get('github', {})},
                                   {'channel': 'github_comment', 'state': 'not_recorded'},
                                   {'channel': 'newlink', 'state': 'not_recorded'}])
+    if value.get('kind')=='batch' and value.get('options',{}).get('github_write'):
+        expected={f'batch_{kind}:{m["repo_id"]}' for m in value['members'] for kind in ('status','comment')}
+        final=[d for d in value['deliveries'] if d.get('phase')=='final']
+        confirmed={d['channel'] for d in final if d.get('ok')}
+        stage=next((s for s in value.get('stages',[]) if s['id']=='github'),None)
+        if stage:
+            stage=dict(stage)
+            stage.update(name='GitHub 结果投递',status='completed' if expected<=confirmed else 'queued',
+                         conclusion='success' if expected<=confirmed else None)
+            value['stages']=[stage if s['id']=='github' else s for s in value['stages']]
+        value['github']={'ok':expected<=confirmed,'state':'delivered' if expected<=confirmed else 'outbox_pending'}
     return value

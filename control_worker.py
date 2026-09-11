@@ -49,10 +49,19 @@ def submit(hub, url, actor, profile, suites, diagnostic, request_id, source_mode
 
 def work(hub):
     from github_deliveries import work as deliver
-    threading.Thread(target=deliver,args=(hub,),daemon=True,name='delivery-worker').start()
+    from cloud_config import enabled
+    if enabled('github_write'):
+        threading.Thread(target=deliver,args=(hub,),daemon=True,name='delivery-worker').start()
     while True:
         try:
-            claim = rpc('/internal/claim', {'worker':'local-wsl', 'repositories':sorted(hub.allowed_repos)})
+            from resource_gate import inspect
+            resource=inspect()
+            if resource.get('enabled'):
+                rpc('/internal/worker-state',{'worker':os.environ.get('PIPELINE_WORKER_ID','ci-e2e'),'resource':resource})
+                if not resource['ready']:
+                    time.sleep(20)
+                    continue
+            claim = rpc('/internal/claim', {'worker':os.environ.get('PIPELINE_WORKER_ID','local-wsl'), 'repositories':sorted(hub.allowed_repos)})
             if claim:
                 execute(hub, claim)
         except Exception as error:
@@ -63,9 +72,20 @@ def work(hub):
 def execute(hub, claim):
     source, lease = claim['run'], claim['lease_token']
     run_id = source['id']
-    hub.create_run(source['pr_url'],source['requested_by'],hub.public_base_url,
-                   profile='browser-e2e',_control_run=source)
+    hub.create_run(source.get('pr_url') or '',source['requested_by'],hub.public_base_url,
+                   profile='browser-e2e',suites=[s['id'] for s in source.get('suites',[])] or None,_control_run=source)
     run = hub.runs[run_id]
+    if source.get('kind')=='batch':
+        run.update({k:source[k] for k in ('kind','members','options','baseline_revisions','title','full_acceptance','approved_risky','combination_key')})
+        run['review']=source['review']
+        if source.get('source_mode')=='artifact':
+            run.update({k:source[k] for k in ('source_mode','artifact_manifest','build_id','build_url')})
+            run.update(head_sha=source['head_sha'],base_sha=source['base_sha'])
+            for name,label in {'resolve':'核验构建产物','snapshot':'冻结镜像与校验归档','build':'导入确切镜像','deploy':'部署联合镜像（CI 隔离环境）'}.items():
+                hub._stage(run,name)['name']=label
+        if not source['options']['codex_review']:
+            hub._stage(run,'agent').update(status='completed',conclusion='skipped',name='Codex 代码检视（未启用）')
+        hub._save(run)
     stopped = threading.Event()
     lease_lost = threading.Event()
     run['_lease_lost'] = False

@@ -33,7 +33,7 @@ class SelectionTests(unittest.TestCase):
     def test_local_page_has_actual_queue_control(self):
         status, body = self.request('GET', {'Host':'127.0.0.1:8793'})
         self.assertEqual(status, 200)
-        self.assertIn(b'/api/enqueue', body)
+        self.assertIn(b'/api/batches', body)
 
     def test_review_cannot_fake_coverage(self):
         valid = {'summary':'reviewed', 'findings':[], 'additional_suites':['DR']}

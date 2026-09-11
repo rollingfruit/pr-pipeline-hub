@@ -69,7 +69,7 @@ WantedBy=multi-user.target
         os.execv('/usr/bin/python3', ['python3', str(ROOT / 'publish_results.py'), '--config', str(ROOT / '.runtime/pipeline-server.json')])
     local = json.loads((ROOT / '.runtime/pipeline-local.json').read_text())
     os.environ.update(PIPELINE_PUBLIC_BASE_URL=config['public_base_url'], PIPELINE_SHARE_TOKEN=config['view_token'],
-                      PIPELINE_LOCAL_BASE_URL=local['base_url'], PIPELINE_EMBED_VIEW_TOKEN='true',
+                      PIPELINE_LOCAL_BASE_URL=local['base_url'], PIPELINE_EMBED_VIEW_TOKEN='false',
                       PIPELINE_ALLOWED_REPOS=local['allowed_repos'])
     if (ROOT / '.runtime/ecs-worker.enabled').exists():
         os.environ['PIPELINE_CONTROL_MODE'] = 'ecs'

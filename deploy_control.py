@@ -9,6 +9,7 @@ ssh = '/mnt/c/Windows/System32/OpenSSH/ssh.exe'
 files = [root / name for name in ['control_api.py', 'control_store.py', 'review_adapter.py',
     'review_policy.py', 'control_rpc.py', 'control_requirements.txt', 'share_viewer.py', 'pr_pipeline_hub.py',
     'e2e_catalog.py', 'deploy/install-control.py']]
+files += [root/'batches.py',root/'batch_store.py',root/'cloud_config.py']
 files += [p for p in (root / 'web/dist').rglob('*') if p.is_file()]
 if not (root / 'web/dist/index.html').exists():
     raise RuntimeError('Build web assets first')

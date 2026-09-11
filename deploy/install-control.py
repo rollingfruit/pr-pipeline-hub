@@ -26,6 +26,12 @@ if not env.exists():
     db_env.write_text(f'POSTGRES_USER=prpipeline\nPOSTGRES_DB=prpipeline\nPOSTGRES_PASSWORD={password}\n')
     db_env.chmod(0o600)
 
+# Explicit deployment policy: public read-only dashboard, never public Worker access.
+settings = dict(line.split('=', 1) for line in env.read_text().splitlines() if '=' in line)
+settings.update(PIPELINE_PUBLIC_READ='true', PIPELINE_EMBED_VIEW_TOKEN='false')
+env.write_text(''.join(f'{key}={value}\n' for key, value in settings.items()))
+env.chmod(0o600)
+
 exists = subprocess.run(['docker', 'inspect', 'pr-pipeline-postgres'], capture_output=True).returncode == 0
 if not exists:
     run('docker', 'run', '-d', '--name', 'pr-pipeline-postgres', '--restart', 'unless-stopped',

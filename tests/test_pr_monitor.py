@@ -13,6 +13,17 @@ def pr(number=102,sha='a',state='open',draft=False):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_other_repository_identity_and_no_backfill(self):
+        with tempfile.TemporaryDirectory() as temp:
+            github=Mock(side_effect=[{'id':2,'full_name':'rollingfruit/service_router'},[[pr()]]])
+            send=Mock(return_value={'ok':True})
+            monitor=Monitor(github,send,Path(temp)/'router.json',repo='rollingfruit/service_router')
+            monitor.tick()
+            self.assertEqual(github.call_args_list[0].args[0],['api','repos/rollingfruit/service_router'])
+            self.assertEqual(send.call_args.args[0],'/internal/monitors/service-router-local-poll')
+            self.assertEqual(monitor.status()['repo'],'rollingfruit/service_router')
+            self.assertFalse(any(c.args[0]=='/internal/submit' for c in send.call_args_list))
+
     def test_inventory_includes_history_without_building_it(self):
         with tempfile.TemporaryDirectory() as temp:
             github=Mock(side_effect=[{'id':1,'full_name':'rollingfruit/agent-governance-gw'},[[pr(),pr(99,state='closed')]]])

@@ -193,9 +193,15 @@ class PipelineHub:
             raise ValueError("Invalid source_mode")
         if source_mode == "pr-head" and (profile != "browser-e2e" or not diagnostic):
             raise ValueError("pr-head requires a diagnostic browser-e2e run; it cannot certify merge readiness")
-        owner, repo, number = parse_pr_url(pr_url)
+        artifact = bool(_control_run and _control_run.get('source_mode') == 'artifact')
+        if artifact:
+            owner, repo = _control_run['repo'].split('/')
+            number = None
+            pr_url = ''
+        else:
+            owner, repo, number = parse_pr_url(pr_url)
         repo_full_name = f"{owner}/{repo}"
-        if repo_full_name.lower() not in self.allowed_repos:
+        if repo_full_name.lower() not in self.allowed_repos and not (_control_run and _control_run.get('kind')=='batch'):
             raise PermissionError(f"仓库 {repo_full_name} 不在 PIPELINE_ALLOWED_REPOS 中")
         if profile not in {"code-review", "browser-e2e"}:
             raise ValueError("Unknown pipeline profile")
@@ -345,6 +351,14 @@ class PipelineHub:
                 self.queue.task_done()
 
     def _execute(self, run_id: str) -> None:
+        if self.runs[run_id].get('kind')=='batch':
+            if self.runs[run_id].get('source_mode')=='artifact':
+                from artifact_runner import ArtifactRunner
+                ArtifactRunner(self,self.runs[run_id]).execute()
+            else:
+                from batch_runner import BatchRunner
+                BatchRunner(self,self.runs[run_id]).execute()
+            return
         if self.runs[run_id].get("profile") == "browser-e2e":
             from e2e_runner import E2ERunner
             E2ERunner(self, self.runs[run_id]).execute()

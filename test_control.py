@@ -54,7 +54,7 @@ class DatabaseTests(unittest.TestCase):
         return payload
 
     def send(self, payload, delivery=None, event='pull_request'):
-        return self.store.receive(delivery or secrets.token_hex(8), hashlib.sha256(json.dumps(payload).encode()).hexdigest(), event, payload)
+        return self.store.receive(delivery or secrets.token_hex(8), hashlib.sha256(json.dumps(payload).encode()).hexdigest(), event, payload, 'local_manual')
 
     def test_duplicate_and_out_of_order(self):
         p = self.event()
@@ -130,7 +130,7 @@ class DatabaseTests(unittest.TestCase):
         from pathlib import Path
         import tempfile
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
-            'PIPELINE_PUBLIC_BASE_URL':'http://example.invalid', 'PIPELINE_VIEW_TOKEN':'test-view',
+            'PIPELINE_PUBLIC_BASE_URL':'http://example.invalid', 'PIPELINE_PUBLIC_READ':'false', 'PIPELINE_VIEW_TOKEN':'test-view',
             'PIPELINE_WORKER_TOKEN':'test-worker', 'PIPELINE_WEBHOOK_SECRET':'test-secret'}):
             app = create_app(self.store, ArchiveHub(Path(folder)))
             with TestClient(app) as client:
@@ -146,16 +146,16 @@ class DatabaseTests(unittest.TestCase):
                 response = client.get('/?access_token=test-view', follow_redirects=False)
                 self.assertEqual(response.status_code,303)
                 self.assertIn('HttpOnly',response.headers['set-cookie'])
-                self.assertEqual(len(client.get('/api/runs').json()['runs']),1)
+                self.assertEqual(len(client.get('/api/runs').json()['runs']),0)
 
     def test_poll_and_webhook_share_one_review(self):
         event=self.event()
         digest=hashlib.sha256(json.dumps(event).encode()).hexdigest()
         first=self.store.receive('poll-test',digest,'pull_request',event,'github_poll')
-        second=self.send(event,'hook-test')
-        self.assertEqual(first['id'],second['id'])
-        self.assertEqual(len(self.store.runs()),1)
-        self.assertEqual(self.store.runs()[0]['trigger_source'],'github_poll')
+        second=self.store.receive('hook-test',digest,'pull_request',event,'github_webhook')
+        self.assertTrue(first['discovery_only'])
+        self.assertTrue(second['discovery_only'])
+        self.assertEqual(len(self.store.runs()),0)
         self.store.set_monitor('test',{'status':'watching','latest':{'number':1}})
         self.assertEqual(self.store.monitors()[0]['latest']['number'],1)
 

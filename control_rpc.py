@@ -12,7 +12,7 @@ for line in Path('/etc/pr-pipeline-control.env').read_text().splitlines():
         os.environ[name] = value
 payload = json.load(sys.stdin)
 path = payload['path']
-if not path.startswith('/internal/') and path not in {'/api/runs'}:
+if not path.startswith('/internal/') and path not in {'/api/runs', '/api/monitors', '/api/batches'}:
     raise ValueError('RPC path not allowed')
 body = json.dumps(payload['body']).encode() if 'body' in payload else None
 request = urllib.request.Request('http://127.0.0.1:8792'+path, body,

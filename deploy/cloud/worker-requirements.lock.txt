@@ -1,0 +1,8 @@
+-r requirements.lock.txt
+# Required by the real subscribed-Codex model adapter, not code review.
+jsonschema==4.23.0
+attrs==25.3.0
+jsonschema-specifications==2024.10.1
+referencing==0.36.2
+rpds-py==0.25.1
+PyYAML==6.0.2
