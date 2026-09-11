@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "enabled_after": "",
+  "base_url": "",
+  "token_file": "/root/.config/pr-pipeline-hub/newlink-service-token",
+  "group_id": "1002029982597251125",
+  "agent_id": "2b6d5bef-1a74-4e13-8638-eb64ea35e869",
+  "workspace_id": "f599cfe5-bc2b-4900-bf05-5e2dbe18a431",
+  "agent_account": "5pupqcim1qwe@cb8603490ca",
+  "team_id": "5F6F60A267A643698F796AE10217CBBC",
+  "tenant_id": "",
+  "corp_id": 0
+}

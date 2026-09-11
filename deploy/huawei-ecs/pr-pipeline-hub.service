@@ -1,0 +1,23 @@
+[Unit]
+Description=PR Pipeline Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prpipeline
+Group=prpipeline
+WorkingDirectory=/opt/pr-pipeline-hub/current
+EnvironmentFile=/etc/pr-pipeline-hub.env
+Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/pr-pipeline-hub/current/pr_pipeline_hub.py --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/pr-pipeline-hub
+
+[Install]
+WantedBy=multi-user.target

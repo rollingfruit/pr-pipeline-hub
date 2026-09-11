@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PR Pipeline Hub</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>PR Pipeline Hub</h1>
+      <p id="runner-status">正在连接 Runner</p>
+    </div>
+    <div class="topbar-meta">
+      <span class="status-dot" id="health-dot"></span>
+      <span id="runner-location">Runner</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="runs-panel">
+      <form id="run-form" class="run-form">
+        <label for="pr-url">GitHub PR</label>
+        <div class="run-control">
+          <input id="pr-url" name="pr_url" type="url" required
+                 placeholder="https://github.com/owner/repo/pull/123">
+          <button type="submit">运行</button>
+        </div>
+        <input id="requested-by" name="requested_by" type="text" placeholder="发起人，例如 WeLink 用户名">
+        <label for="profile">执行配置</label>
+        <select id="profile"><option value="browser-e2e">本地真实 E2E</option><option value="code-review">代码质量检查</option></select>
+        <label for="source-mode">源码版本</label>
+        <select id="source-mode"><option value="merge">合并候选版本</option><option value="pr-head">PR head（仅诊断，不证明可合入）</option></select>
+        <fieldset id="suite-picker"><legend>执行链路</legend></fieldset>
+        <output id="suite-selection"></output>
+        <label class="diagnostic-option"><input id="diagnostic" type="checkbox">诊断运行（不回写 GitHub）</label>
+        <p id="form-error" class="form-error" role="alert"></p>
+      </form>
+
+      <div class="runs-heading">
+        <h2>运行记录</h2>
+        <button id="refresh-button" class="icon-button" type="button" title="刷新">↻</button>
+      </div>
+      <div id="run-list" class="run-list"></div>
+    </aside>
+
+    <section class="run-detail" aria-live="polite">
+      <div id="empty-state" class="empty-state">
+        <h2>选择一次运行</h2>
+        <p>阶段状态、耗时和命令日志会在这里实时更新。</p>
+      </div>
+
+      <div id="detail-content" hidden>
+        <div class="detail-header">
+          <div>
+            <div class="detail-kicker" id="run-repo"></div>
+            <h2 id="run-title"></h2>
+            <a id="run-pr-link" target="_blank" rel="noreferrer"></a>
+          </div>
+          <div class="detail-result">
+            <span id="run-badge" class="badge"></span>
+            <span id="run-duration"></span>
+          </div>
+        </div>
+
+        <dl class="metadata">
+          <div><dt>运行 ID</dt><dd id="run-id"></dd></div>
+          <div><dt>提交</dt><dd id="run-sha"></dd></div>
+          <div><dt>分支</dt><dd id="run-branch"></dd></div>
+          <div><dt>发起人</dt><dd id="run-requested-by"></dd></div>
+        </dl>
+        <div id="e2e-links" class="e2e-links"></div>
+        <div id="e2e-status" class="e2e-status"></div>
+
+        <section class="pipeline-section">
+          <div class="section-heading">
+            <h3>流水线</h3>
+            <p id="run-summary"></p>
+          </div>
+          <div id="stage-flow" class="stage-flow"></div>
+          <ol id="e2e-steps" class="e2e-steps"></ol>
+        </section>
+
+        <section class="logs-section">
+          <div class="logs-heading">
+            <div>
+              <h3 id="log-title">阶段日志</h3>
+              <p id="log-state"></p>
+            </div>
+            <label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> 跟随输出</label>
+          </div>
+          <pre id="log-output">等待阶段输出...</pre>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
