@@ -37,10 +37,21 @@ class E2ETest(unittest.TestCase):
         self.assertFalse(full)
         self.assertEqual([s["id"] for s in selected], ["E01"])
 
-    def test_rejects_unimplemented_empty_and_bad_selections(self):
-        for selection in ([], ["E04"], ["unknown"], "E01", [1]):
+    def test_rejects_empty_and_bad_selections(self):
+        for selection in ([], ["unknown"], "E01", [1]):
             with self.subTest(selection=selection), self.assertRaises(ValueError):
                 catalog.select_suites("a/b", 1, selection)
+
+    def test_resilience_suites_are_optional_and_have_strict_cases(self):
+        selected, full = catalog.select_suites("a/b", 1, ["E04", "E05", "E06"])
+        self.assertFalse(full)
+        self.assertEqual([s["id"] for s in selected], ["E04", "E05", "E06"])
+        good = lambda suite, case: {"id": case, "suite": suite, "status": "passed", "evidence": ["trace.zip"]}
+        self.assertEqual(len(catalog.validate_result({"tests": [good("E04", "cancel")]}, "E04")), 1)
+        with self.assertRaises(ValueError):
+            catalog.validate_result({"tests": [good("E05", "tool-failure")]}, "E05")
+        self.assertEqual(len(catalog.validate_result({"tests": [good("E05", "tool-failure"), good("E05", "terminal-failure")]}, "E05")), 2)
+        self.assertEqual(len(catalog.validate_result({"tests": [good("E06", "event-replay")]}, "E06")), 1)
 
     def test_zero_skipped_missing_and_duplicate_evidence_cannot_pass(self):
         good = {"id": "rule", "suite": "DR", "status": "passed", "evidence": ["trace.zip"]}

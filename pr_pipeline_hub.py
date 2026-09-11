@@ -193,7 +193,7 @@ class PipelineHub:
             raise ValueError("Invalid source_mode")
         if source_mode == "pr-head" and (profile != "browser-e2e" or not diagnostic):
             raise ValueError("pr-head requires a diagnostic browser-e2e run; it cannot certify merge readiness")
-        artifact = bool(_control_run and _control_run.get('source_mode') == 'artifact')
+        artifact = bool(_control_run and _control_run.get('source_mode') in {'artifact','branch'})
         if artifact:
             owner, repo = _control_run['repo'].split('/')
             number = None

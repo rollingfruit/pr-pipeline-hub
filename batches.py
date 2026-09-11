@@ -26,9 +26,15 @@ def validate(body):
         if m['repo'] in seen:
             raise ValueError('同仓最多选择一个 PR')
         seen.add(m['repo'])
-        if type(m.get('repo_id')) is not int or type(m.get('pr_number')) is not int or m['pr_number']<1:
+        branch = body.get('source_mode') == 'branch'
+        if branch:
+            if type(m.get('repo_id')) is not int or not m.get('head_ref') or not m.get('base_ref') or m.get('pr_number') is not None:
+                raise ValueError('Invalid branch identity')
+            if body.get('github_write') or body.get('codex_review'):
+                raise ValueError('Branch batches do not enable PR review/writeback')
+        elif type(m.get('repo_id')) is not int or type(m.get('pr_number')) is not int or m['pr_number']<1:
             raise ValueError('Invalid repository / PR identity')
-        if m.get('pr_url')!=f"https://github.com/{m['repo']}/pull/{m['pr_number']}":
+        if not branch and m.get('pr_url')!=f"https://github.com/{m['repo']}/pull/{m['pr_number']}":
             raise ValueError('PR URL does not match identity')
         for key in ('head_sha','base_sha'):
             if not re.fullmatch('[0-9a-f]{40}',m.get(key,'')):
@@ -99,18 +105,30 @@ def _submit(hub,body):
         saved=json.loads(file.read_text())
         if saved['digest']!=digest:raise ValueError('提交标识已用于不同内容')
         return rpc('/internal/batches',saved['manifest'])
-    fresh=resolve(hub,[m['pr_url'] for m in body['members']])
+    if body.get('source_mode')=='branch':
+        from branch_batches import resolve as resolve_branches
+        fresh=resolve_branches(hub,body['members'])
+    else:
+        fresh=resolve(hub,[m['pr_url'] for m in body['members']])
     for expected,result in zip(body['members'],fresh):
         if not result['ok']:raise ValueError(result['error'])
         actual=result['member']
         if any(expected[k]!=actual[k] for k in ('repo_id','head_sha','base_sha')):
-            raise ValueError('版本已过期，请重新解析：'+expected['pr_url'])
+            raise ValueError('版本已过期，请重新解析：'+expected['repo'])
         if actual['risky_files'] and not body.get('approve_risky',False):
             raise ValueError('构建敏感变更需本机确认：'+', '.join(actual['risky_files']))
     stack=load_stack();preflight=stack.doctor(include_runtime=False)
     if not preflight['ok']:
         raise ValueError('环境检查失败：'+'; '.join(c['name'] for c in preflight['checks'] if c.get('required',True) and not c['ok']))
     manifest={**body,'members':[r['member'] for r in fresh],'baseline_revisions':preflight['revisions']}
+    if body.get('source_mode')=='branch':
+        import os
+        from pathlib import Path
+        baseline=Path(os.environ.get('GAMMA_E2E_BASELINE_FILE','/etc/pr-e2e/artifact-baseline.json'))
+        if baseline.is_file():
+            manifest['integration_images']=json.loads(baseline.read_text())
+            for item in manifest['integration_images'].values():
+                manifest['baseline_revisions'][item['repo'].split('/')[-1]]=item['source_sha']
     from pr_pipeline_hub import atomic_json
     atomic_json(file,{'digest':digest,'manifest':manifest})
     return rpc('/internal/batches',manifest)

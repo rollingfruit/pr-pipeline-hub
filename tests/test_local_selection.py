@@ -38,6 +38,6 @@ class SelectionTests(unittest.TestCase):
     def test_review_cannot_fake_coverage(self):
         valid = {'summary':'reviewed', 'findings':[], 'additional_suites':['DR']}
         self.assertEqual(validate_review(valid), valid)
-        for patch in ({'summary':''}, {'additional_suites':['E06']}, {'findings':[{'severity':'okay'}]}):
+        for patch in ({'summary':''}, {'additional_suites':['unknown']}, {'findings':[{'severity':'okay'}]}):
             with self.assertRaises(ValueError):
                 validate_review({**valid, **patch})

@@ -11,6 +11,16 @@ from share_viewer import ArchiveHub, ingest
 
 
 class ShareTests(unittest.TestCase):
+    def test_unreadable_or_invalid_run_does_not_break_listing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bad = root / 'runs' / 'bad'
+            bad.mkdir(parents=True)
+            (bad / 'run.json').write_bytes(b'not-json')
+            with patch.dict('os.environ', {'PIPELINE_PUBLIC_BASE_URL': 'http://localhost'}):
+                hub = ArchiveHub(root)
+                self.assertEqual(hub.list_runs(), [])
+
     def test_private_inputs_and_symlinks_excluded(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

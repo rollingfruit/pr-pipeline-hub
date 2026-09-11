@@ -19,7 +19,7 @@ class BatchTests(unittest.TestCase):
         b=manifest();self.assertTrue(validate(b)[1]);b['baseline_enabled']=False;self.assertFalse(validate(b)[1])
         b['suite_ids']=['E02'];self.assertFalse(validate(b)[1])
     def test_invalid_selection(self):
-        for update in [{'members':[]},{'suite_ids':[]},{'suite_ids':['E04']},{'codex_review':'false'}]:
+        for update in [{'members':[]},{'suite_ids':[]},{'suite_ids':['unknown']},{'codex_review':'false'}]:
             with self.assertRaises(ValueError):validate({**manifest(),**update})
         b=manifest();b['members']*=2
         with self.assertRaises(ValueError):validate(b)

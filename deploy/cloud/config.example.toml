@@ -25,6 +25,7 @@ code_review = false
 github_write = false
 monitor = false
 newlink = false
+resilience = false
 
 [secrets]
 worker_token = "/etc/pr-pipeline/secrets/worker-token"

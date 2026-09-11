@@ -35,6 +35,13 @@ def create_app(store=None, archive=None):
     @app.middleware('http')
     async def authentication(request, call_next):
         path = request.url.path
+        if os.environ.get('PIPELINE_AUTH_MODE')=='robot-session' and not path.startswith('/internal/'):
+            from robot_session import username
+            actor=await asyncio.to_thread(username,request.headers.get('cookie',''))
+            # Worker read RPCs carry an internal token and never pass the public proxy.
+            worker=os.environ.get('PIPELINE_WORKER_TOKEN','')
+            if not actor and not (worker and hmac.compare_digest(worker,request.headers.get('x-worker-token',''))):
+                return JSONResponse({'error':'请登录 Robot CI'},status_code=401)
         public_read = os.environ.get('PIPELINE_PUBLIC_READ', '').lower() == 'true' and request.method in {'GET', 'HEAD'}
         if public_read and request.query_params.get('access_token'):
             query = urlencode([(key,value) for key,value in request.query_params.multi_items() if key != 'access_token'])
@@ -126,6 +133,9 @@ def create_app(store=None, archive=None):
 
     @app.post('/webhooks/github')
     async def webhook(request: Request):
+        from cloud_config import enabled
+        if not enabled('webhook'):
+            return {'ignored':'automatic PR discovery disabled'}
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
@@ -236,6 +246,9 @@ def create_app(store=None, archive=None):
         if not file.is_relative_to(root) or not file.is_file():
             raise HTTPException(404)
         response = FileResponse(file)
+        if os.environ.get('PIPELINE_AUTH_MODE')=='robot-session' and file.suffix.lower() in {'.html','.htm','.svg','.xml'}:
+            return FileResponse(file,filename=file.name,media_type='application/octet-stream',
+                                headers={'Content-Security-Policy':"sandbox; default-src 'none'"})
         # Playwright needs localStorage. Restrict network access to artifacts instead
         # of an opaque origin, which breaks its report renderer.
         if file.suffix in {'.html', '.svg'}:

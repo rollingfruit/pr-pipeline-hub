@@ -97,7 +97,9 @@ class ArchiveHub:
             value["archive"] = {"read_only": True, "synced_at": value.get("archive_synced_at"),
                                 "execution_location": manifest.get('execution_location', 'Local WSL')}
             return value
-        except (FileNotFoundError, json.JSONDecodeError):
+        # A partially published or incorrectly permissioned diagnostic must not
+        # make the complete dashboard unavailable.
+        except (OSError, json.JSONDecodeError, UnicodeError):
             return None
 
     def read_log(self, run_id, stage_id):

@@ -15,6 +15,10 @@ TOKEN = secrets.token_urlsafe(32)
 
 class Handler(BaseHTTPRequestHandler):
     def cloud_authorized(self):
+        if os.environ.get('PIPELINE_AUTH_MODE')=='robot-session':
+            from robot_session import username
+            self.actor=username(self.headers.get('Cookie',''))
+            return bool(self.actor)
         if os.environ.get('PIPELINE_CLOUD_PROFILE')!='1':return True
         expected=base64.b64encode((os.environ.get('PIPELINE_SUBMIT_USER','operator')+':'+os.environ.get('PIPELINE_SUBMIT_PASSWORD','')).encode()).decode()
         return bool(os.environ.get('PIPELINE_SUBMIT_PASSWORD')) and secrets.compare_digest(self.headers.get('Authorization',''),'Basic '+expected)
@@ -32,11 +36,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'")
         self.send_header('Content-Length', str(len(data)))
-        if status==401:self.send_header('WWW-Authenticate','Basic realm="Pipeline submission", charset="UTF-8"')
+        if status==401 and os.environ.get('PIPELINE_AUTH_MODE')!='robot-session':self.send_header('WWW-Authenticate','Basic realm="Pipeline submission", charset="UTF-8"')
         self.end_headers()
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path == '/internal/session':
+            if self.client_address[0] not in {'127.0.0.1', '::1'}:
+                return self.respond(404, {})
+            from robot_session import check, Unavailable
+            try:
+                user = check(self.headers.get('Cookie', ''))
+                return self.respond(200 if user else 401, {'user': user or None})
+            except Unavailable:
+                return self.respond(503, {'error': 'Robot CI authentication unavailable'})
         if not self.cloud_authorized():return self.respond(401,{'error':'Submitter login required'})
         if not self.allowed():
             return self.respond(403, {'error': 'Loopback host required'})
@@ -45,8 +58,15 @@ class Handler(BaseHTTPRequestHandler):
             from batches import SUPPORTED
             from control_client import rpc
             from cloud_config import enabled
-            return self.respond(200,{'suites':CATALOG,'supported':SUPPORTED,'monitors':rpc('/api/monitors')['monitors'],
+            return self.respond(200,{'suites':CATALOG,'supported':SUPPORTED,'monitors':[],
                 'features':{key:enabled(key) for key in ('code_review','github_write')}})
+        if self.path.startswith('/api/branches?'):
+            from urllib.parse import parse_qs
+            from branch_batches import branches
+            try:return self.respond(200,branches(self.server.hub,parse_qs(urlsplit(self.path).query)['repo'][0]))
+            except Exception as error:
+                from pr_pipeline_hub import redact
+                return self.respond(409,{'error':redact(str(error))[:400]})
         if self.path == '/api/prs':
             from pr_monitor import STATE, REPO
             state = json.loads(STATE.read_text())
@@ -54,7 +74,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'repo': REPO, 'checked_at': state.get('checked_at'), 'prs': prs})
         if self.path != '/':
             return self.respond(404, {})
-        page=(ROOT/'static/batch-editor.html').read_text(encoding='utf-8').replace('__TOKEN__', TOKEN)
+        page=(ROOT/'static/branch-editor.html').read_text(encoding='utf-8').replace('__TOKEN__', TOKEN)
+        page=page.replace('__PIPELINE_BASE__',os.environ.get('PIPELINE_PUBLIC_BASE_URL','').rstrip('/'))
         page=page.replace('__EDITOR_API_BASE__','/submit' if os.environ.get('PIPELINE_CLOUD_PROFILE')=='1' else '')
         page=page.replace('http://119.8.233.58:8080/batches',os.environ.get('PIPELINE_PUBLIC_BASE_URL','http://119.8.233.58:8080').rstrip('/')+'/batches')
         return self.respond(200,page,'text/html')
@@ -70,13 +91,18 @@ class Handler(BaseHTTPRequestHandler):
         if origin and origin not in origins:
             return self.respond(403, {'error': 'Invalid origin'})
         try:
-            if self.path in {'/api/batches/resolve','/api/batches'}:
+            if self.path in {'/api/batches/resolve','/api/branches/resolve','/api/batches'}:
                 length=int(self.headers.get('Content-Length',0))
                 if not 0<length<=65536:return self.respond(413,{})
                 body=json.loads(self.rfile.read(length))
                 from batches import resolve,submit
+                if self.path=='/api/branches/resolve':
+                    from branch_batches import resolve as branch_resolve
+                    return self.respond(200,{'results':branch_resolve(self.server.hub,body['members'])})
                 if self.path.endswith('/resolve'):
                     return self.respond(200,{'results':resolve(self.server.hub,body['urls'])})
+                if body.get('source_mode')!='branch':return self.respond(409,{'error':'请使用分支组合提交；PR 自动验证已关闭'})
+                body['requested_by']=getattr(self,'actor','local-selection')
                 result=submit(self.server.hub,body)
                 result['web_url']=self.server.hub.public_base_url.rstrip('/')+result['web_path']
                 return self.respond(200,result)

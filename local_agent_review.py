@@ -14,7 +14,7 @@ SCHEMA = {
             'properties': {'severity': {'type': 'string', 'enum': ['high', 'medium', 'low']},
                            'file': {'type': 'string'}, 'line': {'type': 'integer', 'minimum': 1},
                            'title': {'type': 'string'}, 'body': {'type': 'string'}}}},
-        'additional_suites': {'type': 'array', 'items': {'type': 'string', 'enum': ['E01', 'E02', 'E03', 'DR', 'DR-contract']}}
+        'additional_suites': {'type': 'array', 'items': {'type': 'string', 'enum': ['E01', 'E02', 'E03', 'E04', 'E05', 'E06', 'DR', 'DR-contract']}}
     }
 }
 

@@ -17,7 +17,7 @@ import stack
 
 parser=argparse.ArgumentParser()
 parser.add_argument('--from-batch',required=True)
-parser.add_argument('--suite',choices=['E01','E02','E03'])
+parser.add_argument('--suite',choices=['E01','E02','E03','E04','E05','E06'])
 parser.add_argument('--adapter-fix',action='store_true')
 args=parser.parse_args()
 if not re.fullmatch(r'[a-zA-Z0-9-]+',args.from_batch):raise ValueError('Invalid batch ID')

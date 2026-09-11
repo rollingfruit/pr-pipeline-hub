@@ -76,6 +76,11 @@ def execute(hub, claim):
                    profile='browser-e2e',suites=[s['id'] for s in source.get('suites',[])] or None,_control_run=source)
     run = hub.runs[run_id]
     if source.get('kind')=='batch':
+        run['source_mode']=source.get('source_mode','merge')
+        run['integration_images']=source.get('integration_images',{})
+        if run['source_mode']=='branch':
+            hub._stage(run,'resolve')['name']='核验冻结分支版本'
+            hub._stage(run,'snapshot')['name']='检出分支与固定依赖镜像'
         run.update({k:source[k] for k in ('kind','members','options','baseline_revisions','title','full_acceptance','approved_risky','combination_key')})
         run['review']=source['review']
         if source.get('source_mode')=='artifact':

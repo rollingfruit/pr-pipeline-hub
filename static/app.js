@@ -145,7 +145,8 @@ function renderDetail(run) {
   const groups = run.profile === "browser-e2e" ? [
     {id: "source", name: "准备与构建", stageIds: ["resolve", "agent", "preflight", "snapshot", "build"]},
     {id: "environment", name: "部署验证", stageIds: ["baseline", "deploy"]},
-    {id: "browser", name: "浏览器全链路", stageIds: ["E01", "E02", "E03", "DR"]},
+    {id: "browser", name: "浏览器全链路", stageIds: ["E01", "E02", "E03", "E04", "DR"]},
+    {id: "resilience", name: "韧性与幂等", stageIds: ["E05", "E06"]},
     {id: "contract", name: "跨服务契约", stageIds: ["DR-contract"]},
     {id: "results", name: "证据与回写", stageIds: ["report", "github"]},
   ] : pipelineGroups;

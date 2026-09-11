@@ -14,6 +14,17 @@ from e2e_runner import E2ERunner, EnvironmentFailure, AssertionFailure
 class BatchRunner(E2ERunner):
     def verify_versions(self):
         from pr_pipeline_hub import utc_now
+        if self.run.get('source_mode')=='branch':
+            from branch_batches import resolve
+            results=resolve(self.hub,self.run['members'])
+            self.run['version_checks']=[{'repo':m['repo'],'expected_head':m['head_sha'],'expected_base':m['base_sha'],
+                'actual_head':r.get('member',{}).get('head_sha'),'actual_base':r.get('member',{}).get('base_sha'),
+                'checked_at':utc_now(),'error':r.get('error')} for m,r in zip(self.run['members'],results)]
+            self.save()
+            if any(not r['ok'] or any(m[k]!=r['member'][k] for k in ('repo_id','head_sha','base_sha')) for m,r in zip(self.run['members'],results)):
+                self.run['stale']=True
+                raise EnvironmentFailure('分支版本已变化或不可用，请重新解析提交')
+            return
         comparisons=[]
         for m in self.run['members']:
             p=self.hub._gh_json(['api',f"repos/{m['repo']}/pulls/{m['pr_number']}"])
@@ -54,7 +65,11 @@ class BatchRunner(E2ERunner):
 
     def snapshot(self):
         self.sources={};self.baselines={};self.trees={}
-        lock=self.stack.snapshot(self.folder/'sources',self.run['baseline_revisions'])
+        if self.run.get('source_mode')=='branch' and self.run.get('integration_images'):
+            lock={'services':{name:{'sha':sha,'assets':{}} for name,sha in self.run['baseline_revisions'].items()},
+                  'integration_images':self.run['integration_images']}
+        else:
+            lock=self.stack.snapshot(self.folder/'sources',self.run['baseline_revisions'])
         base_images={}
         for name in self.stack.SOURCE_REPOS:
             dockerfile=self.folder/'sources'/name/'Dockerfile'
@@ -69,13 +84,20 @@ class BatchRunner(E2ERunner):
             name=m['repo'].split('/')[-1];root=self.folder/'members'/name;root.parent.mkdir(exist_ok=True)
             log=self.folder/'snapshot.log'
             self.hub._checked([self.hub.git_cli,'clone','--no-checkout',f"https://github.com/{m['repo']}.git",self.hub._git_path(root)],env,log,[],attempts=3)
-            self.hub._checked([self.hub.git_cli,'-C',self.hub._git_path(root),'fetch','origin',f"refs/pull/{m['pr_number']}/head"],env,log,[],attempts=3)
+            fetch_ref='refs/heads/'+m['head_ref'] if self.run.get('source_mode')=='branch' else f"refs/pull/{m['pr_number']}/head"
+            self.hub._checked([self.hub.git_cli,'-C',self.hub._git_path(root),'fetch','origin',fetch_ref],env,log,[],attempts=3)
             self.command(['git','checkout','--detach',m['head_sha']],root)
             baseline=self.folder/'members'/(name+'-base')
             self.command(['git','clone','--no-hardlinks','--no-checkout',str(root),str(baseline)])
             self.command(['git','checkout','--detach',m['base_sha']],baseline)
+            if self.run.get('source_mode')=='branch':
+                from review_policy import select
+                files=self.stack.git(root,'diff','--name-only',m['base_sha'],m['head_sha']).splitlines()
+                if select(m['repo'],files)['risky_files'] and not self.run.get('approved_risky'):
+                    raise EnvironmentFailure('分支包含未经确认的构建敏感变更')
             try:
-                self.command(['git','-c','user.name=Pipeline','-c','user.email=pipeline@localhost','merge','--no-commit','--no-ff',m['base_sha']],root)
+                if self.run.get('source_mode')!='branch':
+                    self.command(['git','-c','user.name=Pipeline','-c','user.email=pipeline@localhost','merge','--no-commit','--no-ff',m['base_sha']],root)
             except EnvironmentFailure:
                 conflicts=self.stack.git(root,'diff','--name-only','--diff-filter=U').splitlines()
                 if conflicts:
@@ -111,6 +133,12 @@ class BatchRunner(E2ERunner):
         self.images={};provenance={}
         for service,(name,variable,_) in self.stack.SERVICES.items():
             m=next((m for m in self.run['members'] if m['repo'].endswith('/'+name)),None)
+            if not m and self.run.get('source_mode')=='branch' and self.run.get('integration_images'):
+                fixed=self.run['integration_images'][service]
+                actual=self.stack.capture(['docker','image','inspect','--format','{{.Id}}',fixed['image_id']])
+                if actual!=fixed['image_id']:raise EnvironmentFailure('固定依赖镜像不可用：'+service)
+                self.images[variable]=actual;provenance[service]={**fixed,'reuse':'frozen integration image'}
+                continue
             sha=m['base_sha'] if m else self.run['baseline_revisions'][name]
             source=self.baselines[name] if m else self.stack.ROOT/name
             image=f'local/pr-e2e-{service}:{sha[:12]}'
@@ -141,7 +169,7 @@ class BatchRunner(E2ERunner):
         for m in self.run['members']:
             name=m['repo'].split('/')[-1]
             service=next(s for s,(n,_,_) in self.stack.SERVICES.items() if n==name)
-            tree=self.trees[name]
+            tree=m['head_sha'] if self.run.get('source_mode')=='branch' else self.trees[name]
             self.command([sys.executable,self.stack.HERE/'build-service.py',service,'--source',self.sources[name],
                           '--revision',tree,'--image',f"local/pr-e2e-{service}:{self.run['id']}"],timeout=14400)
             record=json.loads((self.stack.STATE/'build-contexts'/f'{name}-{tree[:12]}'/'build.json').read_text())
@@ -178,6 +206,14 @@ class BatchRunner(E2ERunner):
         finally:
             try:self.stage('report',self.report)
             except Exception as e:self.failure_kind='error';self.run['error']=str(e)
+            if self.run.get('source_mode')=='branch' and self.env:
+                try:
+                    self.active='report'
+                    self.compose('stop')
+                    self.run['environment_status']='stopped'
+                except Exception as error:
+                    self.failure_kind='error'
+                    self.run['cleanup_error']=str(error)
             self.run['failure_kind']=self.failure_kind
             self.publish(self.failure_kind)
             self.hub._stage(self.run,'github').update(status='completed',conclusion='skipped')

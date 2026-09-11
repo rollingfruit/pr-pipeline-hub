@@ -7,6 +7,8 @@ from batches import validate, fingerprint
 DDL='''
 CREATE TABLE IF NOT EXISTS batches (id text PRIMARY KEY REFERENCES reviews(id), submission_id text UNIQUE NOT NULL, digest text NOT NULL);
 CREATE TABLE IF NOT EXISTS batch_members (batch_id text REFERENCES batches(id), repo_id bigint NOT NULL, pr integer NOT NULL, head text NOT NULL, base text NOT NULL, PRIMARY KEY(batch_id,repo_id));
+ALTER TABLE reviews ALTER COLUMN pr DROP NOT NULL;
+ALTER TABLE batch_members ALTER COLUMN pr DROP NOT NULL;
 '''
 
 
@@ -17,9 +19,10 @@ def create(store, body):
     now=datetime.now(timezone.utc).isoformat()
     first=body['members'][0]
     run={**first,'id':run_id,'kind':'batch','title':body['name'],'created_at':now,'status':'queued',
-         'summary':'等待本机联合验证','profile':'browser-e2e','source_mode':'merge','trigger_source':'local_batch',
-         'requested_by':'local-selection','stages':[],'suites':suites,'full_acceptance':full,
+         'summary':'等待 CI 联合验证','profile':'browser-e2e','source_mode':body.get('source_mode','merge'),'trigger_source':'manual_batch',
+         'requested_by':body.get('requested_by','local-selection'),'stages':[],'suites':suites,'full_acceptance':full,
          'members':body['members'],'baseline_revisions':body['baseline_revisions'],
+         'integration_images':body.get('integration_images',{}),
          'options':{k:body[k] for k in ('codex_review','baseline_enabled','github_write')},
          'review':{'status':'pending' if body['codex_review'] else 'disabled','summary':'检视尚未完成' if body['codex_review'] else '未启用代码检视，代码风险未评估','findings':[]},
          'approved_risky':body.get('approve_risky',False),'combination_key':fingerprint({'members':[(m['repo_id'],m['pr_number'],m['head_sha'],m['base_sha']) for m in sorted(body['members'],key=lambda x:x['repo'])], 'suites':sorted(body['suite_ids']),'baseline':body['baseline_enabled'],'integration_revisions':body['baseline_revisions']})[:12]}

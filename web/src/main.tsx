@@ -46,8 +46,13 @@ export type Run = {
   full_acceptance?: boolean;
   kind?: string;
   source_mode?: string;
+  build_result?: {build_id:string;source_sha:string;image:string;image_id:string};
+  rollback?: string;
+  image_manifest?: {name:string;generation:number;images:string[]}[];
+  evidence_notice?: string;
+  provider_scope?: string;
   build_url?: string;
-  members?: {repo:string;repo_id?:number;pr_number:number;pr_url:string;head_sha:string;base_sha:string}[];
+  members?: {repo:string;repo_id?:number;pr_number:number|null;pr_url:string;head_ref?:string;base_ref?:string;head_sha:string;base_sha:string}[];
   options?: {codex_review:boolean;baseline_enabled:boolean;github_write:boolean};
   version_checks?: {repo:string;expected_head:string;actual_head:string;expected_base:string;actual_base:string;state:string}[];
   id: string;
@@ -98,8 +103,12 @@ export type Run = {
 type Suite = { id: string; name: string; kind: string; implemented: boolean };
 const token = new URLSearchParams(location.search).get("access_token");
 const headers = token ? { "X-Pipeline-View-Token": token } : undefined;
+const basePath = location.pathname.startsWith('/pipeline') ? '/pipeline' : '';
+const currentPath = () => location.pathname.slice(basePath.length) || '/';
+const sitePath = (path: string) => basePath + path;
 async function api<T>(url: string): Promise<T> {
-  const r = await fetch(url, { headers });
+  const r = await fetch(sitePath(url), { headers });
+  if (r.status === 401 && basePath) location.assign('/?return_to='+encodeURIComponent(location.pathname));
   if (!r.ok)
     throw Error(
       r.status === 401
@@ -112,6 +121,9 @@ function safeUrl(value?: string) {
   if (!value) return "#";
   try {
     const u = new URL(value, location.origin);
+    if (basePath && u.hostname === location.hostname && /^\/(runs|batches|artifacts|api|history|capabilities|runners)(\/|$)/.test(u.pathname)) {
+      u.host=location.host;u.protocol=location.protocol;u.pathname=sitePath(u.pathname);u.searchParams.delete('access_token');
+    }
     return ["http:", "https:"].includes(u.protocol) ? u.href : "#";
   } catch {
     return "#";
@@ -178,10 +190,11 @@ function Result({ value }: { value?: string }) {
   );
 }
 const stagesets = [
-  ["接收与准备", ["resolve", "agent", "preflight", "prepare"]],
+  ["接收与准备", ["resolve", "agent", "preflight", "prepare", "bootstrap"]],
   ["固定版本与构建", ["snapshot", "build", "merge", "format"]],
   ["部署与基线", ["baseline", "deploy"]],
-  ["关键链路", ["E01", "E02", "E03", "DR", "DR-contract", "unit", "vet"]],
+  ["关键链路", ["E01", "E02", "E03", "E04", "DR", "DR-contract", "unit", "vet"]],
+  ["韧性与幂等", ["E05", "E06"]],
   ["报告与回写", ["report", "github", "docs"]],
 ] as [string, string[]][];
 function App() {
@@ -190,7 +203,7 @@ function App() {
     [catalog, setCatalog] = useState<Suite[]>([]),
     [current, setCurrent] = useState<Run>(),
     [page, setPage] = useState(
-      /^\/(runs|batches)\//.test(location.pathname) ? "detail" : location.pathname==='/history'?'overview':location.pathname==='/reviews'?'reviews':location.pathname==='/runners'?'runners':location.pathname==='/capabilities'?'capabilities':"batches",
+      /^\/(runs|batches)\//.test(currentPath()) ? "detail" : currentPath()==='/history'?'overview':currentPath()==='/runners'?'runners':currentPath()==='/capabilities'?'capabilities':"batches",
     ),
     [tab, setTab] = useState("总览"),
     [selected, setSelected] = useState(""),
@@ -208,14 +221,14 @@ function App() {
         api<{ runs: Run[] }>("/api/runs"),
         api<{ suites: Suite[] }>("/api/e2e/suites"),
         api<typeof health>("/api/health"),
-        api<{monitors:typeof monitors}>('/api/monitors'),
+        Promise.resolve({monitors: [] as typeof monitors}),
       ]);
       setRuns(data.runs);
       setCatalog(c.suites);
       setHealth(h);
       setMonitors(m.monitors);
-      const id = /^\/(runs|batches)\//.test(location.pathname)
-        ? location.pathname.split("/")[2]
+      const id = /^\/(runs|batches)\//.test(currentPath())
+        ? currentPath().split("/")[2]
         : current?.id;
       if (id) setCurrent(await api<Run>(`/api/runs/${id}`));
       setError("");
@@ -235,9 +248,9 @@ function App() {
         (c) => `${c.phase}:${c.suite}:${c.id}` === caseKey,
       ) ||
       current.evidence_cases?.find(
-        (c) => c.phase === "candidate" && c.status !== "passed",
+        (c) => c.phase === (current.source_mode === 'environment' ? 'current' : 'candidate') && c.status !== "passed",
       ) ||
-      current.evidence_cases?.find((c) => c.phase === "candidate");
+      current.evidence_cases?.find((c) => c.phase === (current.source_mode === 'environment' ? 'current' : 'candidate'));
     const id =
       selected ||
       chosen?.suite ||
@@ -248,7 +261,7 @@ function App() {
       return;
     }
     let active = true;
-    fetch(`/api/runs/${current.id}/stages/${id}/log`, { headers })
+    fetch(sitePath(`/api/runs/${current.id}/stages/${id}/log`), { headers })
       .then((r) =>
         r.ok ? r.text() : Promise.reject(Error(`日志暂不可用 (${r.status})`)),
       )
@@ -264,7 +277,7 @@ function App() {
   }, [current, selected, caseKey]);
   useEffect(() => {
     const back = () => {
-      const p = location.pathname;
+      const p = currentPath();
       setPage(
         /^\/(runs|batches)\//.test(p)
           ? "detail"
@@ -280,7 +293,7 @@ function App() {
     return () => removeEventListener("popstate", back);
   }, []);
   function open(r: Run) {
-    history.pushState({}, "", `/${r.kind==='batch'?'batches':'runs'}/${r.id}`);
+    history.pushState({}, "", sitePath(`/${r.kind==='batch'?'batches':'runs'}/${r.id}`));
     setCurrent(r);
     setPage("detail");
     setTab("总览");
@@ -292,12 +305,12 @@ function App() {
   }
   function nav(p: string) {
     setPage(p);
-    history.pushState({}, "", p === "overview" ? "/history" : `/${p}`);
+    history.pushState({}, "", sitePath(p === "overview" ? "/history" : `/${p}`));
   }
   const cases = current?.evidence_cases || [],
     picked =
       cases.find((c) => `${c.phase}:${c.suite}:${c.id}` === caseKey) ||
-      cases.find((c) => c.phase === "candidate" && c.status !== "passed") ||
+      cases.find((c) => c.phase === (current?.source_mode === 'environment' ? 'current' : 'candidate') && c.status !== "passed") ||
       cases.find((c) => c.phase === "candidate") ||
       cases[0];
   const activeStage =
@@ -334,8 +347,8 @@ function App() {
           <tr>
             <th>用例</th>
             <th>选择依据</th>
-            <th>基线</th>
-            <th>候选</th>
+            {current?.source_mode !== 'environment' && <th>基线</th>}
+            <th>{current?.source_mode === 'environment' ? '当前环境' : '候选'}</th>
             <th>耗时</th>
           </tr>
         </thead>
@@ -345,7 +358,7 @@ function App() {
                 (c) => c.phase === "baseline" && c.suite === s.id,
               ),
               c = cases.filter(
-                (c) => c.phase === "candidate" && c.suite === s.id,
+                (c) => c.phase === (current?.source_mode === 'environment' ? 'current' : 'candidate') && c.suite === s.id,
               );
             const result = (values: Case[]) =>
               !values.length
@@ -370,10 +383,10 @@ function App() {
                     {s.id} {s.name}
                   </button>
                 </td>
-                <td>{s.reason || "历史记录未保存"}</td>
-                <td>
+                <td>{s.reason || (current?.source_mode === 'environment' ? '手动选择的当前环境诊断' : '历史记录未保存')}</td>
+                {current?.source_mode !== 'environment' && <td>
                   <Result value={result(b)} />
-                </td>
+                </td>}
                 <td>
                   <Result value={result(c)} />
                 </td>
@@ -399,7 +412,7 @@ function App() {
       <div className="section-head">
         <h3>
           <FileText size={18} /> {picked.suite} ·{" "}
-          {picked.phase === "baseline" ? "基线" : "候选"}证据
+          {picked.phase === 'current' ? '当前环境' : picked.phase === "baseline" ? "基线" : "候选"}证据
         </h3>
         <Result value={picked.status} />
       </div>
@@ -413,12 +426,12 @@ function App() {
             key={`${c.phase}:${c.suite}:${c.id}`}
             value={`${c.phase}:${c.suite}:${c.id}`}
           >
-            {c.phase === "baseline" ? "基线" : "候选"} {c.suite} · {c.title}
+            {c.phase === 'current' ? '当前环境' : c.phase === "baseline" ? "基线" : "候选"} {c.suite} · {c.title}
           </option>
         ))}
       </select>
       {picked.errors?.length > 0 && (
-        <pre className="assertion">{picked.errors.join("\n")}</pre>
+        <pre className="assertion">{picked.errors.join("\n").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')}</pre>
       )}
       <div className="evidence-grid">
         <div>
@@ -471,7 +484,6 @@ function App() {
         <nav>
           {[
             [LayoutDashboard, "batches", "联合验证"],
-            [GitPullRequest, "reviews", "PR 动态"],
             [ListChecks, "overview", "执行记录"],
             [ShieldCheck, "capabilities", "关键能力"],
             [Server, "runners", "运行环境"],
@@ -500,7 +512,7 @@ function App() {
         <header className="top">
           <span>
             PR Pipeline Hub <ChevronRight size={14} />{" "}
-            {page === 'batches' || (page==='detail'&&current?.kind==='batch') ? '联合验证' : page === "detail" || page === 'reviews'
+            {page === 'detail' && current?.source_mode === 'environment' ? '环境诊断' : page === 'batches' || (page==='detail'&&current?.kind==='batch') ? '联合验证' : page === "detail" || page === 'reviews'
               ? "PR 动态"
               : page === "capabilities"
                 ? "关键能力"
@@ -531,15 +543,15 @@ function App() {
                 <GitPullRequest size={26} />
                 <div>
                   <h1>
-                    {current.kind==='batch'?'联合验证':`#${current.pr_number}`} {current.title}
+                    {current.source_mode==='environment'?(current.build_result?'Gamma 验证':'环境诊断'):current.kind==='batch'?'联合验证':`#${current.pr_number}`} {current.title}
                   </h1>
-                  <p>
+                  {current.source_mode==='environment' ? <p>dev-gamma · CI 专用测试身份 · {current.build_result?'本次构建产物验证':'未构建或更新集群镜像'}</p> : <p>
                     {current.repo} · head{" "}
                     <code>{current.head_sha?.slice(0, 8) || "待解析"}</code> ·
                     base{" "}
                     <code>{current.base_sha?.slice(0, 8) || "待解析"}</code> ·{" "}
                     {current.head_ref || "—"}
-                  </p>
+                  </p>}
                 </div>
               </div>
               <div className="pr-actions">
@@ -548,10 +560,18 @@ function App() {
                 {current.build_url && links("来源构建", current.build_url)}
               </div>
             </div>
+            {current.source_mode==='environment'&&<section className="page-content" style={{paddingTop:12,paddingBottom:12}}>
+              <div className="section-head"><h2>实测环境镜像</h2><span>仅适用于本次环境快照，不代表分支或 PR 合入验收</span></div>
+              {current.build_result&&<p>来源构建：{current.build_result.build_id}<br/>源码：<code style={{overflowWrap:'anywhere'}}>{current.build_result.source_sha}</code><br/>交付镜像：<code style={{overflowWrap:'anywhere'}}>{current.build_result.image}</code></p>}
+              {current.rollback&&<p>失败恢复：{current.rollback==='restored'?'已恢复部署前镜像':current.rollback==='unchanged'?'镜像未改变':'需要人工处理，未覆盖外部更新'}</p>}
+              {current.provider_scope && <p>OpenCode 专用测试 Runtime · 不覆盖多 Provider 切换</p>}
+              {current.image_manifest?.map(item=><p key={item.name}><strong>{item.name}</strong> · generation {item.generation}<br/>{item.images.map(image=><code key={image} style={{overflowWrap:'anywhere'}}>{image}</code>)}</p>)}
+              {current.evidence_notice&&<p className="muted">{current.evidence_notice}</p>}
+            </section>}
             {current.kind==='batch'&&<section className="page-content" style={{paddingTop:12,paddingBottom:12}}>
               <div className="section-head"><h2>联合版本清单</h2><span>{current.full_acceptance?'核心集合验证':'局部验证'} · 不证明单个 PR 独立合入安全</span></div>
               {current.source_mode==='artifact' && <p>构建产物验证：运行已交付的确切镜像；不代表 PR 合入验收，不修改 CCE 环境。</p>}
-              {current.members?.map(m=><p key={m.repo}>{m.pr_url ? links(`${m.repo} #${m.pr_number}`,m.pr_url) : m.repo} · head <code>{m.head_sha.slice(0,8)}</code> / base <code>{m.base_sha.slice(0,8)}</code></p>)}
+              {current.members?.map(m=><p key={m.repo}>{m.pr_url ? links(`${m.repo} #${m.pr_number}`,m.pr_url) : m.repo} · {m.head_ref || 'head'} <code>{m.head_sha.slice(0,8)}</code> / {m.base_ref || 'base'} <code>{m.base_sha.slice(0,8)}</code></p>)}
               <p className="muted">Codex 代码检视：{current.options?.codex_review?'启用':'未启用'} · 基线对照：{current.options?.baseline_enabled?'启用':'未启用'} · GitHub 回写：{current.options?.github_write?'启用':'未启用'}</p>
               {current.version_checks?.filter(v=>v.expected_head!==v.actual_head||v.expected_base!==v.actual_base||v.state!=='open').map(v=><p className="error" key={v.repo}>{v.repo} 版本已过期 · head {v.expected_head.slice(0,8)} → {v.actual_head.slice(0,8)} · base {v.expected_base.slice(0,8)} → {v.actual_base.slice(0,8)} · {v.state}</p>)}
             </section>}
@@ -663,7 +683,7 @@ function App() {
                 )}
                 {tab === "E2E 证据" && (
                   <>
-                    <h2>基线与候选对比</h2>
+                    <h2>{current.source_mode === 'environment' ? '当前环境执行证据' : '基线与候选对比'}</h2>
                     {table}
                     {evidence}
                     <div className="report-links">
@@ -801,7 +821,7 @@ function App() {
                   <div className="agent">
                     <span className="avatar">X</span>
                     <div>
-                      {current.kind==='batch'?(health.cloud_profile?'Linux Worker':'本机 WSL Worker'):'xiao-commitor'}<small>{current.kind==='batch'?'本轮不包含 NewLink 投递验收':'消息与任务回执独立核对'}</small>
+                      {current.source_mode==='environment'?'CI 专用 E2E Runtime':current.kind==='batch'?(health.cloud_profile?'Linux Worker':'本机 WSL Worker'):'xiao-commitor'}<small>{current.source_mode==='environment'?'未触发 NewLink 机器人或代码检视':current.kind==='batch'?'本轮不包含 NewLink 投递验收':'消息与任务回执独立核对'}</small>
                     </div>
                   </div>
                 </section>
@@ -822,7 +842,7 @@ function App() {
             <h2 style={{marginTop:24}}>当前执行 / 等待队列</h2>
             {runs.filter(r=>['running','queued'].includes(r.status)).map(r=><div className="delivery" key={r.id}><button className="text-button" onClick={()=>open(r)}>{r.title}</button><Badge item={r}/><span>队列 {r.queue_position||'—'}</span></div>)}
             {!runs.some(r=>['running','queued'].includes(r.status))&&<p className="empty">当前没有执行或排队任务</p>}
-            <h2>批次记录</h2><div className="table-wrap"><table><thead><tr><th>批次</th><th>跨仓组合</th><th>用例 / 配置</th><th>结果</th></tr></thead><tbody>{runs.filter(r=>r.kind==='batch').map(r=><tr key={r.id}><td><button className="text-button" onClick={()=>open(r)}>{r.title}</button><small>{r.id}</small></td><td>{r.members?.map(m=><div key={m.repo}>{m.repo.split('/').pop()} #{m.pr_number}</div>)}</td><td>{r.suites?.map(s=>s.id).join(' / ')}<small>代码检视 {r.options?.codex_review?'开启':'关闭'} · 基线 {r.options?.baseline_enabled?'开启':'关闭'}</small></td><td><Badge item={r}/></td></tr>)}</tbody></table></div>
+            <h2>批次记录</h2><div className="table-wrap"><table><thead><tr><th>批次</th><th>跨仓组合</th><th>用例 / 配置</th><th>结果</th></tr></thead><tbody>{runs.filter(r=>r.kind==='batch').map(r=><tr key={r.id}><td><button className="text-button" onClick={()=>open(r)}>{r.title}</button><small>{r.id}</small></td><td>{r.members?.map(m=><div key={m.repo}>{m.repo.split('/').pop()} {m.pr_number ? '#'+m.pr_number : m.head_ref || '构建产物'}</div>)}</td><td>{r.suites?.map(s=>s.id).join(' / ')}<small>代码检视 {r.options?.codex_review?'开启':'关闭'} · 基线 {r.options?.baseline_enabled?'开启':'关闭'}</small></td><td><Badge item={r}/></td></tr>)}</tbody></table></div>
             {!runs.some(r=>r.kind==='batch')&&<p className="empty">暂无联合验证批次</p>}
           </section>
         ) : page === 'reviews' ? (
@@ -913,7 +933,7 @@ function App() {
                   onClick={() => open(r)}
                   key={r.id}
                 >
-                  {r.repo} #{r.pr_number}
+                  {r.source_mode==='environment'?r.title:`${r.repo} #${r.pr_number}`}
                 </button>
               ))}
           </section>
@@ -974,7 +994,7 @@ function App() {
                     <tr key={r.id}>
                       <td>
                         <button className="text-button" onClick={() => open(r)}>
-                          #{r.pr_number} {r.title}
+                          {r.pr_number ? `#${r.pr_number} ` : ''}{r.title}
                         </button>
                       </td>
                       <td>{r.repo}</td>

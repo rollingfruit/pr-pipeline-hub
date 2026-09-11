@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
-FEATURES = ('code_review', 'github_write', 'monitor', 'newlink')
+FEATURES = ('code_review', 'github_write', 'monitor', 'newlink', 'webhook', 'resilience')
 
 
 def load(path, role=None, check_files=False):
@@ -23,7 +23,7 @@ def load(path, role=None, check_files=False):
         raise ValueError('Cloud NewLink adapter is not certified; leave this optional integration disabled')
     for key in ('public','control'):
         url=urlsplit(cfg['urls'].get(key,''))
-        if url.scheme not in {'https','http'} or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in {'','/'} or any(c in cfg['urls'][key] for c in '<>"\'\\\r\n '):
+        if url.scheme not in {'https','http'} or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in ({'','/','/pipeline','/pipeline/'} if key=='public' else {'','/'}) or any(c in cfg['urls'][key] for c in '<>"\'\\\r\n '):
             raise ValueError('Invalid URL: '+key)
         if url.scheme!='https' and url.hostname not in {'127.0.0.1','localhost'} and not cfg.get('allow_private_http',False):
             raise ValueError('HTTPS required, or explicitly allow isolated private HTTP: '+key)
@@ -33,6 +33,7 @@ def load(path, role=None, check_files=False):
               'worker':('worker_token',), 'monitor':('worker_token',), 'register':('worker_token',),
               'publisher':('worker_token',), 'check':('worker_token','submit_password','database_url')}.get(role,())
     for key in required:
+        if key=='submit_password' and cfg.get('auth_mode')=='robot-session':continue
         secret=cfg['secrets'].get(key,'')
         if not secret: raise ValueError('Secret file required: '+key)
         if check_files and (not Path(secret).is_file() or not Path(secret).read_text().strip()):
@@ -45,7 +46,9 @@ def activate(cfg, role):
     paths=cfg['paths']; urls=cfg['urls']; features=cfg['features']
     env={'PIPELINE_CLOUD_PROFILE':'1','PIPELINE_CONTROL_MODE':'ecs',
          'PIPELINE_CONTROL_URL':urls['control'].rstrip('/'),'PIPELINE_PUBLIC_BASE_URL':urls['public'].rstrip('/'),
-         'PIPELINE_EDITOR_URL':urls['public'].rstrip('/')+'/submit/',
+         'PIPELINE_EDITOR_URL':urls.get('editor',urls['public'].rstrip('/')+'/submit/'),
+         'PIPELINE_AUTH_MODE':cfg.get('auth_mode','basic'),
+         'PIPELINE_ROBOT_AUTH_URL':cfg.get('robot_auth_url','http://127.0.0.1:18082/api/auth/pipeline'),
          'PIPELINE_DATA_DIR':paths['data'],'PIPELINE_ARCHIVE_ROOT':paths['archives'],
          'PIPELINE_E2E_ROOT':paths['stack'],'E2E_STATE_DIR':paths['state'],
          'E2E_WORKSPACE_ROOT':paths['workspace'],'E2E_SETTINGS_FILE':paths['runtime_settings'],
@@ -70,6 +73,7 @@ def activate(cfg, role):
     needed={'control':('worker_token','database_url'),'editor':('worker_token','submit_password','github_token'),
             'worker':('worker_token','github_token'),'publisher':('worker_token',)}.get(role,())
     for key in needed:
+        if key=='submit_password' and cfg.get('auth_mode')=='robot-session':continue
         file=cfg['secrets'].get(key)
         if file:env[secret_map[key]]=Path(file).read_text().strip()
     os.environ.update(env)

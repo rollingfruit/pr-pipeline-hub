@@ -2,16 +2,18 @@
 
 CORE = ("E01", "E02", "E03")
 REQUIRED_CASES = {"E01": {"create"}, "E02": {"private"}, "E03": {"group"},
-                  "DR": {"rule", "model"}, "DR-contract": {"contract"}}
+                  "E04": {"cancel"}, "E05": {"tool-failure", "terminal-failure"},
+                  "E06": {"event-replay"}, "DR": {"rule", "model"},
+                  "DR-contract": {"contract"}}
 CATALOG = (
     {"id": "E01", "name": "创建真实机器人", "kind": "browser", "implemented": True},
     {"id": "E02", "name": "私聊执行与追问", "kind": "browser", "implemented": True},
     {"id": "E03", "name": "群聊 @ 与最终交付", "kind": "browser", "implemented": True},
     {"id": "DR", "name": "规则与模型直答", "kind": "browser", "implemented": True},
     {"id": "DR-contract", "name": "直答幂等与契约", "kind": "integration", "implemented": True},
-    {"id": "E04", "name": "确认与停止", "kind": "browser", "implemented": False},
-    {"id": "E05", "name": "产物下载", "kind": "browser", "implemented": False},
-    {"id": "E06", "name": "权限隔离", "kind": "browser", "implemented": False},
+    {"id": "E04", "name": "停止与取消", "kind": "browser", "implemented": True},
+    {"id": "E05", "name": "失败可见性", "kind": "resilience", "implemented": True},
+    {"id": "E06", "name": "重复事件与幂等", "kind": "hybrid", "implemented": True},
 )
 
 
