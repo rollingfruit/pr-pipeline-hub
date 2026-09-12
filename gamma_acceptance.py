@@ -81,7 +81,7 @@ def main():
            'review': {'status': 'disabled', 'summary': '本次只执行环境 E2E', 'findings': []}}
     if build:
         run.update(title='dev-gamma 构建产物部署与真实 E2E', diagnostic=False,
-                   trigger_source='robot_ci_build',
+                   trigger_source=build.get('trigger_source', 'robot_ci_build'),
                    repo=build['result']['service_id'],
                    build_result={'build_id': build['build_id'], 'source_sha': build['result']['commit_sha'],
                                  'image': build['pinned_image'], 'image_id': build['image_id']},
@@ -173,6 +173,12 @@ def main():
                 'images': [c['image'] for c in item['template']['spec']['containers']]} for item in frozen]
             finish()
         start('bootstrap')
+        from gamma_readiness import wait_for_deployments
+        required = {'service-router', 'mattermost', 'agent-link', 'semantic-gateway', 'semantic-schedule', 'governance', 'multica-server'}
+        if build:
+            required.add(rollout.deploy)
+        run['runtime_image_manifest'] = wait_for_deployments(access, required)
+        save()
         namespace = shlex.quote(access.namespace)
         token = access.remote(f'kubectl -n {namespace} exec deployment/multica-server -- printenv SERVICE_INTERNAL_TOKEN').strip()
         if not token:
@@ -225,6 +231,7 @@ def main():
             'HOME': str(root), 'E2E_STATE_DIR': str(root / 'state'),
             'E2E_SETTINGS_FILE': str(private / 'settings.json'), 'E2E_SETTINGS': str(private / 'settings.json'),
             'E2E_PRIVATE_DIR': str(private), 'E2E_APP_URL': app_url, 'E2E_MULTICA_URL': multica_url,
+            'E2E_PYTHON': sys.executable,
             'E2E_DISCOVER_BROWSER_IDENTITY': '1',
             'PIPELINE_CLOUD_PROFILE': '1',
             'PLAYWRIGHT_BROWSERS_PATH': '/var/lib/pr-e2e/.cache/ms-playwright',
