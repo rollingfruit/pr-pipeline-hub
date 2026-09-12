@@ -11,6 +11,10 @@ const {chromium} = require('/var/lib/pr-e2e/state/playwright/node_modules/@playw
       const page = await browser.newPage({viewport: {width, height: 1000}, extraHTTPHeaders: {'X-Worker-Token': token}});
       const errors = [];
       page.on('pageerror', e => errors.push(e.message));
+      page.on('requestfailed', request => errors.push(`${request.url()}: ${request.failure()?.errorText || 'request failed'}`));
+      await page.route('http://127.0.0.1:8792/pipeline/**', route => route.continue({
+        url: route.request().url().replace('http://127.0.0.1:8792/pipeline/', 'http://127.0.0.1:8792/'),
+      }));
       const response = await page.goto('http://127.0.0.1:8792/runs/' + process.argv[2]);
       await page.waitForTimeout(2000);
       await page.screenshot({path: `${out}/${process.argv[2]}-${width}.png`, fullPage: true});
@@ -20,5 +24,5 @@ const {chromium} = require('/var/lib/pr-e2e/state/playwright/node_modules/@playw
     }
   } finally { await browser.close(); }
   console.log(JSON.stringify(checks));
-  if (checks.some(c => c.status !== 200 || c.errors.length || c.content > c.viewport)) process.exitCode = 1;
+  if (checks.some(c => c.status !== 200 || c.errors.length || c.content > c.viewport || !c.text.trim())) process.exitCode = 1;
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
