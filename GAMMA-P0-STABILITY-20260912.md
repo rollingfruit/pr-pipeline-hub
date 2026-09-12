@@ -1,65 +1,68 @@
-# dev-gamma P0 stability result
+# dev-gamma P0 稳定性测试报告
 
-Date: 2026-09-12
+日期：2026-09-12
 
-## Result
+## 测试结论
 
-The requested ten successful E01-E06 rounds completed. The original persistent
-experiment passed rounds 1-6 and stopped at round 7 when its established nested
-SSH transport became inactive. That failed attempt remains unchanged. After
-evidence-gated cleanup and SSH reconnect hardening, four continuation rounds
-completed successfully.
+E01～E06 已完成 10 个成功轮次。
 
-- Successful target slots: 10/10
-- Actual attempts needed for those slots: 11
-- First-attempt pass rate across those attempts: 10/11 (90.9%)
-- Post-hardening continuation: 4/4 (100%)
-- Additional post-hardening diagnostic: 1/1 (100%)
-- Post-hardening total: 5/5 (100%)
-- Archive verification failures: 0
-- Successful cleanup records with active residuals: 0
-- Operator intervention: one evidence-gated recovery after the failed attempt
+- 成功轮次：10/10
+- 实际执行：11 次
+- 尝试级首次通过率：10/11（90.9%）
+- SSH 加固后：5/5 通过
+- 证据归档失败：0
+- 活动残留：0
+- 人工处理：1 次，用于第 7 轮失败后的环境恢复
 
-This is not a claim that the original experiment passed 10/10. Its immutable
-result is 6/7 before interruption. The continuation records are separate tasks.
+原实验第 1～6 轮通过，第 7 轮因 SSH 隧道断开而失败。该失败记录被完整保留，
+没有改成成功。修复并清理环境后，另外执行 4 轮，补齐第 7～10 轮。
 
-## Attempts
+## 执行明细
 
-| Slot | Child run | Result | Duration | Cleanup | Active residuals |
-| --- | --- | --- | ---: | --- | ---: |
-| 1 | `gamma-check-20260912-123750-51f291` | passed | 587s | passed | 0 |
-| 2 | `gamma-check-20260912-124753-40c7d1` | passed | 581s | passed | 0 |
-| 3 | `gamma-check-20260912-125747-ef6ba9` | passed | 589s | passed | 0 |
-| 4 | `gamma-check-20260912-130748-a0ea12` | passed | 589s | passed | 0 |
-| 5 | `gamma-check-20260912-131748-ada25d` | passed | 588s | passed | 0 |
-| 6 | `gamma-check-20260912-132748-02d015` | passed | 557s | passed | 0 |
-| 7, failed attempt | `gamma-check-20260912-133717-f7529f` | environment error | 316s | recovered separately | 0 after recovery |
-| 7, continuation | `gamma-check-20260912-152108-1ff835` | passed | 564s | passed | 0 |
-| 8 | `gamma-check-20260912-153123-90516c` | passed | 584s | passed | 0 |
-| 9 | `gamma-check-20260912-154224-c59795` | passed | 581s | passed | 0 |
-| 10 | `gamma-check-20260912-155255-c47cb6` | passed | 581s | passed | 0 |
+| 轮次 | 运行记录 | 结果 | 耗时 | 清理结果 |
+| --- | --- | --- | ---: | --- |
+| 1 | `gamma-check-20260912-123750-51f291` | 通过 | 587 秒 | 通过 |
+| 2 | `gamma-check-20260912-124753-40c7d1` | 通过 | 581 秒 | 通过 |
+| 3 | `gamma-check-20260912-125747-ef6ba9` | 通过 | 589 秒 | 通过 |
+| 4 | `gamma-check-20260912-130748-a0ea12` | 通过 | 589 秒 | 通过 |
+| 5 | `gamma-check-20260912-131748-ada25d` | 通过 | 588 秒 | 通过 |
+| 6 | `gamma-check-20260912-132748-02d015` | 通过 | 557 秒 | 通过 |
+| 7（首次） | `gamma-check-20260912-133717-f7529f` | 环境故障 | 316 秒 | 恢复后清理完成 |
+| 7（补跑） | `gamma-check-20260912-152108-1ff835` | 通过 | 564 秒 | 通过 |
+| 8 | `gamma-check-20260912-153123-90516c` | 通过 | 584 秒 | 通过 |
+| 9 | `gamma-check-20260912-154224-c59795` | 通过 | 581 秒 | 通过 |
+| 10 | `gamma-check-20260912-155255-c47cb6` | 通过 | 581 秒 | 通过 |
 
-The independent post-change diagnostic was
-`gamma-check-20260912-145826-1429b9` and passed in 580 seconds.
+另有一轮加固验证 `gamma-check-20260912-145826-1429b9`，耗时 580 秒，结果通过。
 
-## Failure classification
+## 第 7 轮为什么失败
 
-The failed attempt was an infrastructure error, not an observed product
-assertion regression. The nested Paramiko transport reported `Broken pipe` and
-then `SSH session not active`. E01-E04 had already passed. E05 tool-failure,
-E05 terminal-failure and E06 event-replay could no longer reach the forwarded
-application, and business inventory cleanup could not be verified through the
-same dead connection.
+CI 机到 dev-gamma 的两层 SSH 连接在运行中断开，日志出现：
 
-The recovery created a fresh SSH connection, removed four bot bindings,
-deactivated the fixture account, stopped the daemon, verified the runtime
-offline, verified the archive and released quarantine with zero active
-residuals. It did not rewrite the failed attempt.
+```text
+Broken pipe
+SSH session not active
+ERR_EMPTY_RESPONSE
+```
 
-## Hardening verification
+E01～E04 已经通过。E05、E06 和环境清理因为无法继续访问服务而失败，属于环境连接
+故障，没有发现对应的产品功能回归。
 
-The access layer now checks both jump-host and nested node transports before
-opening a forwarded channel. Reconnects are serialized, dead clients are closed,
-and channel creation is retried once on a fresh connection. A forced disconnect
-test returned HTTP 200 before and after reconnect. Three focused reconnect tests,
-44 Gamma tests and four disposable PostgreSQL queue/fencing/recovery tests pass.
+## 如何恢复
+
+- 建立新的 SSH 连接。
+- 删除 4 个遗留机器人绑定。
+- 停用本轮测试账号。
+- 停止专用 Daemon，并确认 Runtime 已离线。
+- 校验测试证据，确认活动残留为 0。
+- 解除 dev-gamma 隔离，恢复队列执行。
+
+## 加固内容
+
+- 每次建立转发通道前检查跳板机和节点 SSH 状态。
+- 连接失效时串行重连，避免多个任务同时重建连接。
+- 通道创建失败后，使用新连接重试一次。
+- 保留失败轮次和恢复记录，不用补跑结果覆盖失败事实。
+
+验证结果：强制断开 SSH 后可以自动恢复；44 个 Gamma 测试、4 个数据库队列与
+租约测试、前端生产构建均通过。
