@@ -37,6 +37,8 @@ class Store:
             db.execute(DDL)
             from batch_store import DDL as batch_ddl
             db.execute(batch_ddl)
+            from gamma_queue import DDL as gamma_ddl
+            db.execute(gamma_ddl)
             waiting=db.execute("UPDATE reviews SET state='awaiting_selection',body=body || %s WHERE state IN ('queued','draft') AND body->>'trigger_source' IN ('github_poll','github_webhook') RETURNING id",(Jsonb({'summary':'等待人工重新选择并提交联合验证','failure_kind':'error'}),)).fetchall()
             for row in waiting:
                 db.execute("INSERT INTO deliveries(run_id,channel,phase) VALUES(%s,'github_status','final') ON CONFLICT DO NOTHING",(row['id'],))
@@ -141,6 +143,13 @@ class Store:
         if not evidence.get('environment_unlocked') or not evidence.get('processes_reconciled'):
             raise ValueError('Explicit local environment reconciliation required')
         with self.db() as db:
+            existing = db.execute('SELECT body FROM reviews WHERE id=%s FOR UPDATE', (run_id,)).fetchone()
+            if existing and existing['body'].get('kind') == 'gamma':
+                if (evidence.get('cleanup', {}).get('status') != 'passed'
+                        or evidence.get('cleanup', {}).get('active_residuals') != []
+                        or evidence.get('environment_health') != 'ready'
+                        or not evidence.get('archive_verified') or not evidence.get('remote_operations_reconciled')):
+                    raise ValueError('Gamma recovery requires cleanup, archive and remote-operation evidence')
             patch = {k:v for k,v in evidence.get('result',{}).items() if k in {'review','stages','error','failure_stage','test_results','suites','policy','merge_conflicts'}}
             patch.update(recovery={k:v for k,v in evidence.items() if k!='result'}, failure_kind='error',
                          conclusion='failure', summary='执行器中断后已核对释放环境；本次结果不可用于合入通过')
@@ -148,7 +157,9 @@ class Store:
             if not row:
                 raise ValueError('Run is not interrupted')
             db.execute('INSERT INTO audit(run_id,kind,body) VALUES(%s,%s,%s)', (run_id,'recovered',Jsonb(evidence)))
-            if row['body'].get('kind')=='batch':
+            if row['body'].get('kind') == 'gamma':
+                db.execute("UPDATE execution_environments SET holder=NULL,lease_token=NULL,lease_until=NULL,state='idle',reason='',generation=generation+1 WHERE id='dev-gamma' AND holder=%s", (run_id,))
+            elif row['body'].get('kind')=='batch':
                 from batch_store import enqueue_deliveries
                 enqueue_deliveries(db,row['body'],'final')
             else:
@@ -192,10 +203,17 @@ class Store:
             db.execute("UPDATE reviews SET state='interrupted',body=body || %s WHERE state='running' AND lease_until<now()", (Jsonb({'summary': '执行器心跳超时，需恢复确认', 'failure_kind': 'error'}),))
             if db.execute("SELECT id FROM reviews WHERE state IN ('running','interrupted') LIMIT 1").fetchone():
                 return None
-            row = db.execute("SELECT * FROM reviews WHERE state='queued' AND (body->>'kind'='batch' OR %s::text[] IS NULL OR lower(body->>'repo')=ANY(%s::text[])) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1", (repositories, repositories)).fetchone()
+            row = db.execute("SELECT * FROM reviews WHERE state='queued' AND (body->>'kind' IN ('batch','gamma') OR %s::text[] IS NULL OR lower(body->>'repo')=ANY(%s::text[])) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1", (repositories, repositories)).fetchone()
             if not row:
                 return None
             token = secrets.token_urlsafe(32)
+            if row['body'].get('kind') == 'gamma':
+                from gamma_queue import acquire
+                generation = acquire(db, row, token)
+                if generation is None:
+                    return None
+                row['body']['execution_generation'] = generation
+                db.execute('UPDATE reviews SET body=%s WHERE id=%s', (Jsonb(row['body']), row['id']))
             db.execute("UPDATE reviews SET state='running',lease_token=%s,lease_until=now()+interval '180 seconds',worker=%s WHERE id=%s", (token, worker, row['id']))
             return {'run': row['body'], 'lease_token': token}
 
@@ -207,6 +225,11 @@ class Store:
             if not row or row['state'] != 'running' or row['lease_until'] <= datetime.now(timezone.utc) or not secrets.compare_digest(row['lease_token'] or '', token):
                 raise PermissionError('Invalid or expired execution lease')
             patch = {k:v for k,v in patch.items() if k not in {'id','repo','pr_number','pr_url','created_at','head_sha','base_sha'}}
+            if row['body'].get('kind') == 'gamma':
+                from gamma_queue import update_environment
+                for key in ('kind', 'gamma_request', 'execution_generation', 'environment_key'):
+                    patch.pop(key, None)
+                update_environment(db, run_id, token, patch, final)
             if row['body'].get('stale'):
                 patch['stale'] = True
             status = patch.get('status', 'completed') if final else 'running'
@@ -214,7 +237,9 @@ class Store:
                 raise ValueError('Invalid final state')
             db.execute("UPDATE reviews SET body=body || %s,state=%s,lease_until=now()+interval '180 seconds',updated_at=now() WHERE id=%s", (Jsonb(patch),status,run_id))
             if final:
-                if row['body'].get('kind')=='batch':
+                if row['body'].get('kind') == 'gamma':
+                    pass
+                elif row['body'].get('kind')=='batch':
                     from batch_store import enqueue_deliveries
                     enqueue_deliveries(db,row['body'],'final')
                 else:

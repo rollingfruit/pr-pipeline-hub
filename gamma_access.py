@@ -24,11 +24,21 @@ class GammaAccess:
             if row is None:
                 raise ValueError('Unknown Robot CI environment ID')
             self.environment = dict(row)
+            anchor = db.execute('SELECT jump_host,nodes_json FROM environments WHERE id=?', ('a5932430eb2f',)).fetchone()
+            self._gamma_anchor = dict(anchor) if anchor else None
         self.environment['nodes'] = json.loads(self.environment['nodes_json'])
         self.creds = cce_rollout.overlay_environment_passwords(
             cce_rollout.resolve_credentials(cfg, helper_root=root), self.environment)
         self.servers = []
         self.jump = self.node = None
+        self._connection_lock = threading.RLock()
+
+    def assert_dev_gamma(self):
+        anchor = self._gamma_anchor
+        if (not anchor or self.namespace != 'default'
+                or self.environment['jump_host'] != anchor['jump_host']
+                or sorted(self.environment['nodes']) != sorted(json.loads(anchor['nodes_json']))):
+            raise PermissionError('Administrative operation is restricted to the configured dev-gamma cluster')
 
     def remote(self, command, timeout=60):
         code, out, err = self.adapter.exec_via_nodes(command,
@@ -42,7 +52,24 @@ class GammaAccess:
         return json.loads(self.remote('kubectl -n %s get %s %s -o json' % (
             shlex.quote(self.namespace), shlex.quote(kind), shlex.quote(name) if name else '')))
 
-    def connect(self):
+    @staticmethod
+    def _active(client):
+        if client is None:
+            return False
+        transport = client.get_transport()
+        return bool(transport and transport.is_active() and transport.is_authenticated())
+
+    def _close_clients(self):
+        for client in (self.node, self.jump):
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+        self.node = self.jump = None
+
+    def _connect_unlocked(self):
+        self._close_clients()
         paramiko = self.adapter._import_paramiko()
         jump_user, host, port = self.adapter.parse_ssh_target(self.environment['jump_host'])
         self.jump = paramiko.SSHClient()
@@ -69,16 +96,38 @@ class GammaAccess:
             except Exception as error:
                 errors.append(type(error).__name__)
                 client.close()
-        self.close()
+        self._close_clients()
         raise RuntimeError('No cluster node available: ' + ', '.join(errors))
 
+    def connect(self):
+        with self._connection_lock:
+            if self._active(self.jump) and self._active(self.node):
+                return self
+            return self._connect_unlocked()
+
+    def _open_channel(self, destination, port, source):
+        last_error = None
+        for attempt in range(2):
+            with self._connection_lock:
+                if not (self._active(self.jump) and self._active(self.node)):
+                    self._connect_unlocked()
+                try:
+                    return self.node.get_transport().open_channel(
+                        'direct-tcpip', (destination, port), source, timeout=15)
+                except Exception as error:
+                    last_error = error
+                    self._close_clients()
+            if attempt == 0:
+                continue
+        raise RuntimeError('Gamma SSH tunnel unavailable after reconnect') from last_error
+
     def forward(self, destination, port, local_port):
-        transport = self.node.get_transport()
+        owner = self
         class Handler(socketserver.BaseRequestHandler):
             def handle(self):
                 channel = None
                 try:
-                    channel = transport.open_channel('direct-tcpip', (destination, port), self.request.getpeername(), timeout=15)
+                    channel = owner._open_channel(destination, port, self.request.getpeername())
                     while True:
                         ready, _, _ = select.select([self.request, channel], [], [], 30)
                         for source in ready:
@@ -86,11 +135,14 @@ class GammaAccess:
                             if not data:
                                 return
                             (channel if source is self.request else self.request).sendall(data)
-                except (OSError, EOFError):
+                except Exception:
                     return
                 finally:
                     if channel is not None:
-                        channel.close()
+                        try:
+                            channel.close()
+                        except Exception:
+                            pass
         class Server(socketserver.ThreadingTCPServer):
             allow_reuse_address = True
             daemon_threads = True
@@ -103,6 +155,5 @@ class GammaAccess:
         for server in self.servers:
             server.shutdown()
             server.server_close()
-        for client in (self.node, self.jump):
-            if client is not None:
-                client.close()
+        with self._connection_lock:
+            self._close_clients()

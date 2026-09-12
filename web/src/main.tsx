@@ -43,6 +43,14 @@ type Case = {
   attachments: Attachment[];
 };
 export type Run = {
+  frozen_environment?: {fingerprint:string;images:Record<string,string[]>};
+  current_round?: number;
+  target_rounds?: number;
+  active_run_id?: string;
+  environment_health?: string;
+  cleanup?: {status:string;active_residuals?:unknown[]};
+  statistics?: {planned:number;started:number;completed:number;interrupted:number;first_pass_count:number;first_pass_rate:number|null;failure_types:Record<string,number>};
+  rounds?: {index:number;run_id:string;first_pass:boolean;summary:string;failure_kind:string;archive_verified:boolean;cleanup?:{status:string;active_residuals?:unknown[]}}[];
   full_acceptance?: boolean;
   kind?: string;
   source_mode?: string;
@@ -560,12 +568,24 @@ function App() {
                 {current.build_url && links("来源构建", current.build_url)}
               </div>
             </div>
+            {current.kind==='gamma'&&<section className="page-content">
+              <div className="section-head"><h2>环境队列与稳定性验收</h2><span>dev-gamma · 串行执行</span></div>
+              <p>{current.summary}</p>
+              <p>队列位置：{current.queue_position || '—'} · 当前轮次：{current.current_round || 0}/{current.target_rounds || 1} · 环境：{current.environment_health || '等待'}</p>
+              {current.active_run_id&&links('查看当前轮次', '/pipeline/runs/'+current.active_run_id)}
+              {current.statistics&&<p>计划 {current.statistics.planned} · 已启动 {current.statistics.started} · 已完成 {current.statistics.completed} · 中断 {current.statistics.interrupted} · 首次通过 {current.statistics.first_pass_count}/{current.statistics.started}（{current.statistics.first_pass_rate==null?'未执行':(current.statistics.first_pass_rate*100).toFixed(1)+'%'}）</p>}
+              <p>清理状态：{current.cleanup?.status || 'pending'} · 活动残留：{current.cleanup?.active_residuals?.length ?? '未核验'}</p>
+              <div style={{overflowX:'auto'}}><table><thead><tr><th>轮次</th><th>首次结果</th><th>失败分类</th><th>证据</th><th>清理</th></tr></thead><tbody>
+                {current.rounds?.map(row=><tr key={row.index}><td>{links('第 '+row.index+' 轮','/pipeline/runs/'+row.run_id)}</td><td>{row.first_pass?'通过':'未通过'}</td><td>{row.first_pass?'—':row.failure_kind}</td><td>{row.archive_verified?'已校验':'未确认'}</td><td>{row.cleanup?.status || 'unknown'}</td></tr>)}
+              </tbody></table></div>
+            </section>}
             {current.source_mode==='environment'&&<section className="page-content" style={{paddingTop:12,paddingBottom:12}}>
               <div className="section-head"><h2>实测环境镜像</h2><span>仅适用于本次环境快照，不代表分支或 PR 合入验收</span></div>
               {current.build_result&&<p>来源构建：{current.build_result.build_id}<br/>源码：<code style={{overflowWrap:'anywhere'}}>{current.build_result.source_sha}</code><br/>交付镜像：<code style={{overflowWrap:'anywhere'}}>{current.build_result.image}</code></p>}
               {current.rollback&&<p>失败恢复：{current.rollback==='restored'?'已恢复部署前镜像':current.rollback==='unchanged'?'镜像未改变':'需要人工处理，未覆盖外部更新'}</p>}
               {current.provider_scope && <p>OpenCode 专用测试 Runtime · 不覆盖多 Provider 切换</p>}
               {current.image_manifest?.map(item=><p key={item.name}><strong>{item.name}</strong> · generation {item.generation}<br/>{item.images.map(image=><code key={image} style={{overflowWrap:'anywhere'}}>{image}</code>)}</p>)}
+              {current.frozen_environment&&<details><summary>冻结版本清单</summary><p><code style={{overflowWrap:'anywhere'}}>{current.frozen_environment.fingerprint}</code></p>{Object.entries(current.frozen_environment.images).map(([name,images])=><p key={name}><strong>{name}</strong><br/>{images.map(image=><code key={image} style={{overflowWrap:'anywhere'}}>{image}</code>)}</p>)}</details>}
               {current.evidence_notice&&<p className="muted">{current.evidence_notice}</p>}
             </section>}
             {current.kind==='batch'&&<section className="page-content" style={{paddingTop:12,paddingBottom:12}}>
@@ -592,7 +612,7 @@ function App() {
               <article className="workspace">
                 {tab === "总览" && (
                   <>
-                    <section className="pipeline">
+                    {current.kind!=='gamma'&&<section className="pipeline">
                       <div className="section-head">
                         <h2>CI / E2E 流水线</h2>
                         <span>{time(current.duration_seconds)}</span>
@@ -673,7 +693,7 @@ function App() {
                           );
                         })}
                       </div>
-                    </section>
+                    </section>}
                     <section>
                       <h2>E2E 用例集</h2>
                       {table}

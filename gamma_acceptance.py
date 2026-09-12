@@ -37,6 +37,8 @@ def main():
     parser.add_argument('--build-manifest')
     parser.add_argument('--suites', nargs='+', choices=['E01', 'E02', 'E03', 'E04', 'E05', 'E06'], default=['E01', 'E02', 'E03'])
     args = parser.parse_args()
+    from gamma_lease import check as check_lease
+    check_lease()
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', args.environment_id):
         parser.error('Invalid Robot CI environment ID')
     args.suites = list(dict.fromkeys(args.suites))
@@ -53,7 +55,7 @@ def main():
     account = pwd.getpwnam('pr-e2e')
     viewer = pwd.getpwnam('prpipeline')
     run_id = 'gamma-check-' + time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
-    root = Path('/var/lib/pr-e2e/gamma-diagnostics') / run_id
+    root = Path('/var/lib/pr-gamma-executor/diagnostics') / run_id
     private = root / 'private'
     private.mkdir(parents=True, mode=0o700)
     archive = Path('/var/lib/pr-e2e-share/runs') / run_id
@@ -97,6 +99,8 @@ def main():
     active = stages[0]
     def start(id):
         nonlocal active
+        if id not in ('report', 'restore'):
+            check_lease()
         active = next(s for s in stages if s['id'] == id)
         active.update(status='running', started_at=now())
         save()
@@ -125,7 +129,15 @@ def main():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError('This environment already has an active diagnostic; retry after it completes') from None
+            run['summary'] = '等待 dev-gamma 环境锁'
+            save()
+            while True:
+                check_lease()
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(5)
         start('preflight')
         access.connect()
         resources = access.resource('services')['items']
@@ -197,14 +209,15 @@ def main():
         if digest != expected:
             raise RuntimeError('Daemon binary does not match deployed Multica image')
         run['daemon_sha256'] = digest
-        source = Path('/opt/pr-pipeline-ci/stack')
+        source = Path(os.environ.get('GAMMA_FROZEN_ROOT', '/opt/pr-pipeline-ci')) / 'stack'
         stack = root / 'stack'
         stack.mkdir()
         for name in ('stack.py', 'bootstrap.py', 'local_daemon.py', 'fault-control.py'):
             shutil.copy2(source / name, stack / name)
         shutil.copytree(source / 'playwright', stack / 'playwright',
                         ignore=shutil.ignore_patterns('node_modules', 'results', 'test-results'))
-        (stack / 'playwright/node_modules').symlink_to('/var/lib/pr-e2e/state/playwright/node_modules')
+        dependencies = Path(os.environ.get('GAMMA_FROZEN_ROOT', '/var/lib/pr-e2e/state/playwright')) / 'node_modules'
+        (stack / 'playwright/node_modules').symlink_to(dependencies)
         base = json.loads(Path('/var/lib/pr-e2e/state/settings.json').read_text())
         password = secrets.token_urlsafe(24) + '!7aA'
         redactions.append(password)
@@ -227,6 +240,16 @@ def main():
                 path = Path(folder) / name
                 if not path.is_symlink():
                     os.chown(path, account.pw_uid, account.pw_gid)
+        # The tested Agent must not edit the harness or downloaded Daemon.
+        for folder, dirs, files in os.walk(stack, followlinks=False):
+            os.chown(folder, 0, 0)
+            os.chmod(folder, 0o555)
+            for name in files:
+                path = Path(folder) / name
+                if not path.is_symlink():
+                    os.chown(path, 0, 0)
+                    path.chmod(0o444)
+        os.chown(cli, 0, 0)
         env = {'PATH': str(cli.parent) + ':/opt/pr-pipeline-tools/bin:/opt/pr-pipeline-ci/.venv/bin:/var/lib/pr-e2e/state/tools/node24.18.0/bin:/usr/local/bin:/usr/bin:/bin',
             'HOME': str(root), 'E2E_STATE_DIR': str(root / 'state'),
             'E2E_SETTINGS_FILE': str(private / 'settings.json'), 'E2E_SETTINGS': str(private / 'settings.json'),
@@ -239,6 +262,29 @@ def main():
             'NO_PROXY': '127.0.0.1,localhost,::1'}
         if command(['/opt/pr-pipeline-ci/.venv/bin/python', stack / 'bootstrap.py'], timeout=240):
             raise RuntimeError('Dedicated test identity/runtime preparation failed; see bootstrap log')
+        prepared = json.loads((private / 'settings.json').read_text())
+        configured_workspace = access.remote('kubectl -n ' + namespace +
+            ' exec deployment/multica-server -- printenv MULTICA_WORKSPACE_ID').strip()
+        if prepared.get('WORKSPACE_ID') != configured_workspace:
+            raise RuntimeError('Test Workspace differs from Multica administrative scope; configuration repair required')
+        identity = json.loads((private / 'bootstrap.json').read_text())
+        owner = {'run_id': run_id, 'user_id': identity['user_id'], 'username': prepared['TEST_ADMIN_USER'],
+                 'email': prepared['TEST_ADMIN_EMAIL'], 'daemon_id': prepared['DAEMON_ID'],
+                 'workspace_id': prepared['WORKSPACE_ID']}
+        write(root / 'ownership.json', owner)
+        from gamma_admin import MattermostAdmin
+        MattermostAdmin(access).fixture(owner)
+        # Writable fixture directories remain available, but cannot replace the harness.
+        os.chown(root, 0, account.pw_gid)
+        root.chmod(0o750)
+        frozen_settings = root / 'frozen-settings.json'
+        shutil.copyfile(private / 'settings.json', frozen_settings)
+        os.chown(frozen_settings, 0, account.pw_gid)
+        frozen_settings.chmod(0o640)
+        env.update(E2E_SETTINGS_FILE=str(frozen_settings), E2E_SETTINGS=str(frozen_settings),
+                   E2E_FROZEN_SETTINGS=str(frozen_settings))
+        (root / 'evidence').mkdir(exist_ok=True)
+        os.chown(root / 'evidence', account.pw_uid, account.pw_gid)
         finish()
         from e2e_catalog import validate_result
         failed = []
@@ -247,7 +293,7 @@ def main():
             output = root / 'evidence' / suite
             env.update(E2E_SUITE=suite, E2E_OUTPUT=str(output), E2E_RUN_ID=run_id,
                        E2E_FAULT_CONTROL=str(stack / 'fault-control.py'))
-            code = command(['node', '/var/lib/pr-e2e/state/playwright/node_modules/@playwright/test/cli.js',
+            code = command(['node', dependencies / '@playwright/test/cli.js',
                             'test', '-c', 'playwright.config.ts'], stack / 'playwright', timeout=900)
             evidence = output / 'evidence.json'
             payload = json.loads(evidence.read_text()) if evidence.exists() else {}
@@ -281,14 +327,27 @@ def main():
                 run['summary'] += '; rollback: ' + sanitize(str(error))
                 run['conclusion'] = 'error'
                 finish(False)
+        # Evidence is copied before destructive business cleanup.
+        for path in (root / 'evidence').rglob('*') if (root / 'evidence').exists() else []:
+            if path.is_file() and path.suffix in {'.png', '.webm', '.json', '.ndjson'}:
+                target = archive / 'artifacts/current' / path.relative_to(root / 'evidence')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if path.suffix in {'.json', '.ndjson'}:
+                    target.write_text(sanitize(path.read_text(errors='replace')))
+                else:
+                    shutil.copy2(path, target)
         if env:
             try:
-                cfg = json.loads((private / 'settings.json').read_text())
-                if cfg.get('LOCAL_DAEMON_PROFILE'):
-                    env['HOME'] = str(root / 'state/daemon-home')
-                    command([root / 'bin/multica', 'daemon', 'stop', '--profile', cfg['LOCAL_DAEMON_PROFILE']], timeout=30, log_name='daemon-stop')
-            except Exception:
-                pass
+                check_lease()
+                from gamma_cleanup import cleanup
+                run['cleanup'] = cleanup(root, env, access)
+            except Exception as error:
+                run['cleanup'] = {'status': 'failed', 'error_type': type(error).__name__}
+        else:
+            run['cleanup'] = {'status': 'not_started', 'active_residuals': []}
+        if run['cleanup']['status'] != 'passed':
+            run['conclusion'] = 'error'
+            run['summary'] += '；环境清理未通过，暂停后续执行'
         access.close()
         for stage in stages:
             if stage['status'] == 'queued': stage.update(status='completed', conclusion='skipped')
@@ -308,7 +367,8 @@ def main():
         run['archive_manifest'] = [{'path': str(p.relative_to(archive)),
             'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'bytes': p.stat().st_size}
             for p in archive.rglob('*') if p.is_file() and p.name != 'run.json']
-        run.update(status='completed', finished_at=now(), environment_status='test_runtime_stopped')
+        run.update(status='completed', finished_at=now(), environment_status=(
+            'test_runtime_stopped' if run['cleanup']['status'] == 'passed' else 'quarantined'))
         finish()
         for folder, dirs, files in os.walk(archive):
             os.chown(folder, viewer.pw_uid, viewer.pw_gid)

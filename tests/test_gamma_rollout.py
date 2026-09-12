@@ -2,12 +2,16 @@ import copy
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 from gamma_rollout import GammaRollout
 
 
 class RolloutTests(unittest.TestCase):
     def setUp(self):
+        lease = patch('gamma_lease.check', return_value={'ok': True})
+        lease.start()
+        self.addCleanup(lease.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.original = {'metadata': {'uid': 'u1', 'resourceVersion': '42'}, 'spec': {'template': {
@@ -53,6 +57,13 @@ class RolloutTests(unittest.TestCase):
         self.manifest['result']['service_id'] = 'other'
         with self.assertRaises(ValueError):
             self.rollout.prepare()
+
+    def test_lease_loss_refuses_cluster_mutation(self):
+        self.rollout.prepare()
+        with patch('gamma_lease.check', side_effect=PermissionError('expired')):
+            with self.assertRaises(PermissionError):
+                self.rollout.apply()
+        self.assertEqual(self.commands, [])
 
 
 if __name__ == '__main__':

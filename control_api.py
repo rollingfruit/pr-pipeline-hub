@@ -261,6 +261,28 @@ def create_app(store=None, archive=None):
                 "base-uri 'none'; form-action 'none'; frame-src 'none'")
         return response
 
+    @app.post('/internal/gamma')
+    async def submit_gamma(request: Request):
+        internal(request)
+        raw = await request.body()
+        if len(raw) > 16384:
+            raise HTTPException(413)
+        from gamma_queue import submit
+        try:
+            return await asyncio.to_thread(submit, store, json.loads(raw))
+        except (ValueError, KeyError, TypeError) as error:
+            raise HTTPException(400, str(error))
+
+    @app.post('/internal/gamma/{run_id}/lease')
+    async def gamma_lease(run_id: str, request: Request):
+        internal(request)
+        body = await request.json()
+        from gamma_queue import check
+        try:
+            return await asyncio.to_thread(check, store, run_id, body.get('lease_token', ''), body.get('generation'))
+        except PermissionError as error:
+            raise HTTPException(409, str(error))
+
     @app.post('/internal/claim')
     async def claim(request: Request):
         internal(request)
