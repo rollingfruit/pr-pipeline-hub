@@ -1,0 +1,6 @@
+#!/usr/local/bin/python3.11 -I
+"""Root-owned sudo entry. Only a canonical, leased Gamma queue job can execute."""
+import sys
+sys.path.insert(0, '/opt/pr-pipeline-ci')
+from gamma_campaign import main
+sys.exit(main())

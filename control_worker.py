@@ -71,6 +71,9 @@ def work(hub):
 
 def execute(hub, claim):
     source, lease = claim['run'], claim['lease_token']
+    if source.get('kind') == 'gamma':
+        from gamma_worker import execute as execute_gamma
+        return execute_gamma(hub, claim)
     run_id = source['id']
     hub.create_run(source.get('pr_url') or '',source['requested_by'],hub.public_base_url,
                    profile='browser-e2e',suites=[s['id'] for s in source.get('suites',[])] or None,_control_run=source)

@@ -36,6 +36,8 @@ class GammaRollout:
         return {'deployment': self.deploy, 'container': name, 'before': self.old_image, 'after': image}
 
     def patch(self, obj, image):
+        from gamma_lease import check
+        check()
         operations = [{'op': 'test', 'path': '/metadata/uid', 'value': obj['metadata']['uid']},
                       {'op': 'test', 'path': '/metadata/resourceVersion', 'value': obj['metadata']['resourceVersion']},
                       {'op': 'replace', 'path': f'/spec/template/spec/containers/{self.index}/image', 'value': image}]
