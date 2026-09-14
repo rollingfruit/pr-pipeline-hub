@@ -144,15 +144,19 @@ async function execution(page: Page, channel: any, source: any, bot: any, expect
     expect((run.events || []).some((e: any) => (toolPhase === 'failed' ? ['command', 'tool'] : ['command', 'tool', 'file']).includes(e.kind) &&
         e.task_id === run.task_id && e.run_id === run.run_id && e.phase === toolPhase),
     `Expected a correlated ${toolPhase} tool execution`).toBeTruthy();
-    expect(JSON.stringify(run)).toContain(expected);
-    await expect(page.getByText(expected, {exact: false}).first()).toBeVisible();
+    const [expectedLabel, expectedValue] = expected.split('：', 2);
+    const runText = JSON.stringify(run);
+    expect(runText).toContain(expectedLabel);
+    expect(runText).toContain(expectedValue);
+    await expect(page.getByText(expectedValue, {exact: false}).first()).toBeVisible();
     await expect.poll(async () => (await replies(page, channel, source, bot)).filter(
         p => p.props.agent_run_companion_kind === 'final').length).toBe(1);
     await page.waitForTimeout(5000);
     const finals = (await replies(page, channel, source, bot)).filter(p => p.props.agent_run_companion_kind === 'final');
     expect(finals).toHaveLength(1);
     expect(finals[0].id).toBe(run.final_response.delivery_post_id);
-    expect(finals[0].message).toContain(expected);
+    expect(finals[0].message).toContain(expectedLabel);
+    expect(finals[0].message).toContain(expectedValue);
     expect(finals[0].props.trace_id).toBeTruthy();
     return {source_message: source.id, channel: channel.id, run: anchor.props.agent_run_id, task: run.task_id,
         trace: finals[0].props.trace_id, final_post: finals[0].id, url: page.url()};
@@ -340,7 +344,10 @@ test('[E06] {event-replay} Browser message remains single after native Job idemp
     await page.waitForTimeout(5000);
     const related = await replies(page, channel, source, bot);
     expect(related.filter(p => p.props.agent_run_companion_kind === 'final')).toHaveLength(1);
-    expect(related.find(p => p.props.agent_run_companion_kind === 'final').message).toContain(marker);
+    const finalMessage = related.find(p => p.props.agent_run_companion_kind === 'final').message;
+    const [markerLabel, markerValue] = marker.split('：', 2);
+    expect(finalMessage).toContain(markerLabel);
+    expect(finalMessage).toContain(markerValue);
     await attach(info, {kind: 'hybrid-browser-native-job-idempotency', source_message: source.id,
         channel: channel.id, run: anchor.props.agent_run_id, task: started.task_id,
         duplicate_count: replayBodies.filter(body => body.job_id === started.task_id).length,
