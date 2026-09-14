@@ -81,8 +81,11 @@ for name in ('control_api.py', 'control_store.py', 'gamma_queue.py'):
     install(STAGE / 'hub' / name, HUB / name)
 for source in (STAGE / 'hub').glob('gamma_*.py'):
     install(source, CI / source.name)
+install(STAGE / 'hub/e2e_execution_graph.py', CI / 'e2e_execution_graph.py')
 install(STAGE / 'hub/control_worker.py', CI / 'control_worker.py')
-install(STAGE / 'stack/stack.py', CI / 'stack/stack.py')
+for source in (STAGE / 'stack').rglob('*'):
+    if source.is_file() and 'node_modules' not in source.parts:
+        install(source, CI / 'stack' / source.relative_to(STAGE / 'stack'))
 for index, robot in enumerate(ROBOTS):
     install(STAGE / ('gamma-main-server.py' if index == 0 else 'gamma-preview-server.py'), robot / 'server.py')
     install(STAGE / 'robot/gamma_real.py', robot / 'gamma_real.py')
