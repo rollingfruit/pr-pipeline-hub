@@ -79,6 +79,7 @@ command(['systemctl', 'stop', 'pr-pipeline-control'])
 
 for name in ('control_api.py', 'control_store.py', 'gamma_queue.py'):
     install(STAGE / 'hub' / name, HUB / name)
+install(STAGE / 'hub/cloud_entry.py', CI / 'cloud_entry.py')
 for source in (STAGE / 'hub').glob('gamma_*.py'):
     install(source, CI / source.name)
 install(STAGE / 'hub/e2e_execution_graph.py', CI / 'e2e_execution_graph.py')
