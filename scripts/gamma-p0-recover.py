@@ -55,6 +55,8 @@ try:
                 raise PermissionError('Recovery ownership lost')
         access.assert_dev_gamma()
         access.connect()
+        archive = Path('/var/lib/pr-e2e-share/runs') / child
+        report = json.loads((archive / 'run.json').read_text())
         if args.align_workspace:
             before = access.resource('deployment', 'multica-server')
             backup = root / ('recovery-config-before-' + str(int(time.time())) + '.json')
@@ -75,11 +77,17 @@ try:
             access.remote('kubectl -n default patch deployment multica-server --type=json -p ' + shlex.quote(json.dumps(operations)))
             access.remote('kubectl -n default rollout status deployment/multica-server --timeout=240s', timeout=270)
             evidence['configuration_repair'] = {'name': 'MULTICA_WORKSPACE_ID', 'workspace_id': cfg['WORKSPACE_ID'], 'backup': str(backup)}
-        services = access.resource('services')['items']
-        router = next(s for s in services if s['spec'].get('selector', {}).get('app') == 'service-router')
-        app = access.forward(router['spec']['clusterIP'], 80, 0)
-        env = {**os.environ, 'E2E_APP_URL': app, 'HOME': str(root), 'PATH': '/opt/pr-pipeline-tools/bin:/usr/local/bin:/usr/bin:/bin'}
-        result = cleanup(root, env, access, guard)
+        archived_cleanup = report.get('cleanup') or {}
+        if archived_cleanup.get('status') == 'passed' and not archived_cleanup.get('active_residuals'):
+            result = archived_cleanup
+            evidence['cleanup_source'] = 'verified_child_archive'
+        else:
+            services = access.resource('services')['items']
+            router = next(s for s in services if s['spec'].get('selector', {}).get('app') == 'service-router')
+            app = access.forward(router['spec']['clusterIP'], 80, 0)
+            env = {**os.environ, 'E2E_APP_URL': app, 'HOME': str(root), 'PATH': '/opt/pr-pipeline-tools/bin:/usr/local/bin:/usr/bin:/bin'}
+            result = cleanup(root, env, access, guard)
+            evidence['cleanup_source'] = 'recovery_run'
         evidence['cleanup'] = result
         saved = root / ('recovery-' + str(int(time.time())) + '.json')
         saved.write_text(json.dumps(evidence, ensure_ascii=False))
@@ -87,8 +95,6 @@ try:
         print(json.dumps(evidence, ensure_ascii=False), flush=True)
         if result['status'] != 'passed' or result['active_residuals']:
             raise RuntimeError('Recovery cleanup incomplete; quarantine retained')
-        archive = Path('/var/lib/pr-e2e-share/runs') / child
-        report = json.loads((archive / 'run.json').read_text())
         hashes = report.get('archive_manifest', [])
         if not hashes or not all((archive / p['path']).resolve().is_relative_to(archive) and digest(archive / p['path']) == p['sha256'] for p in hashes):
             raise RuntimeError('Archive verification failed')
