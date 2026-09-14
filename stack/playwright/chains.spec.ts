@@ -144,19 +144,17 @@ async function execution(page: Page, channel: any, source: any, bot: any, expect
     expect((run.events || []).some((e: any) => (toolPhase === 'failed' ? ['command', 'tool'] : ['command', 'tool', 'file']).includes(e.kind) &&
         e.task_id === run.task_id && e.run_id === run.run_id && e.phase === toolPhase),
     `Expected a correlated ${toolPhase} tool execution`).toBeTruthy();
-    const [expectedLabel, expectedValue] = expected.split('：', 2);
+    const expectedParts = expected.includes('：') ? expected.split('：', 2) : [expected];
     const runText = JSON.stringify(run);
-    expect(runText).toContain(expectedLabel);
-    expect(runText).toContain(expectedValue);
-    await expect(page.getByText(expectedValue, {exact: false}).first()).toBeVisible();
+    for (const part of expectedParts) expect(runText).toContain(part);
+    await expect(page.getByText(expectedParts.at(-1)!, {exact: false}).first()).toBeVisible();
     await expect.poll(async () => (await replies(page, channel, source, bot)).filter(
         p => p.props.agent_run_companion_kind === 'final').length).toBe(1);
     await page.waitForTimeout(5000);
     const finals = (await replies(page, channel, source, bot)).filter(p => p.props.agent_run_companion_kind === 'final');
     expect(finals).toHaveLength(1);
     expect(finals[0].id).toBe(run.final_response.delivery_post_id);
-    expect(finals[0].message).toContain(expectedLabel);
-    expect(finals[0].message).toContain(expectedValue);
+    for (const part of expectedParts) expect(finals[0].message).toContain(part);
     expect(finals[0].props.trace_id).toBeTruthy();
     return {source_message: source.id, channel: channel.id, run: anchor.props.agent_run_id, task: run.task_id,
         trace: finals[0].props.trace_id, final_post: finals[0].id, url: page.url()};
