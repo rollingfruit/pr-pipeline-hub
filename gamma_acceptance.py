@@ -1,5 +1,6 @@
 """Real dev-gamma E2E, optionally deploying a verified Robot CI build artifact."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 import fcntl
 import hashlib
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 import urllib.request
 
 from gamma_access import GammaAccess
@@ -88,7 +90,11 @@ def main():
                    build_result={'build_id': build['build_id'], 'source_sha': build['result']['commit_sha'],
                                  'image': build['pinned_image'], 'image_id': build['image_id']},
                    summary='验证本次构建产物，不作 PR 合入结论')
+    state_lock = threading.RLock()
     def save():
+        with state_lock:
+            _save()
+    def _save():
         serialized = json.dumps(run, ensure_ascii=False)
         for secret in redactions:
             if secret:
@@ -108,6 +114,18 @@ def main():
     def finish(ok=True):
         active.update(status='completed', conclusion='success' if ok else 'failure', finished_at=now())
         save()
+    def stage_start(id):
+        check_lease()
+        with state_lock:
+            stage = next(s for s in stages if s['id'] == id)
+            stage.update(status='running', started_at=now())
+            save()
+        print('Gamma stage: ' + stage['name'], flush=True)
+        return stage
+    def stage_finish(stage, ok=True):
+        with state_lock:
+            stage.update(status='completed', conclusion='success' if ok else 'failure', finished_at=now())
+            save()
     save()
     print('PIPELINE_URL=http://119.8.233.58/pipeline/runs/' + run_id, flush=True)
     access = GammaAccess(args.environment_id)
@@ -118,10 +136,10 @@ def main():
             if secret:
                 text = text.replace(secret, '[REDACTED]')
         return text
-    def command(argv, cwd=None, timeout=600, log_name=None):
+    def command(argv, cwd=None, timeout=600, log_name=None, command_env=None):
         with (root / ((log_name or active['id']) + '.log')).open('w') as log:
             result = subprocess.run(['/usr/sbin/runuser', '-u', 'pr-e2e', '--', *map(str, argv)],
-                cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+                cwd=cwd, env=command_env or env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         return result.returncode
     # All per-module environment IDs share one cluster and therefore one lock.
     lock = (root.parent / 'dev-gamma.lock').open('a')
@@ -227,6 +245,7 @@ def main():
         cfg.update(AGENT_PROVIDER='opencode', TEST_ADMIN_USER='gamma-e2e-' + secrets.token_hex(5),
             OPENCODE_FIXTURE_ACCESS=True, E2E_SINGLE_PROVIDER=True,
             E2E_RESILIENCE_ENABLED='E05' in args.suites,
+            E2E_FAILURE_TIMEOUT_SECONDS=int(os.environ.get('GAMMA_E2E_FAILURE_TIMEOUT_SECONDS', '165')),
             TEST_ADMIN_PASSWORD=password, TEST_WORKSPACE=str(workspace), CODEX_PROXY='',
             LOCAL_DAEMON_PROFILE='pr-e2e-gamma-' + secrets.token_hex(4))
         cfg['TEST_ADMIN_EMAIL'] = cfg['TEST_ADMIN_USER'] + '@example.invalid'
@@ -283,28 +302,49 @@ def main():
         frozen_settings.chmod(0o640)
         env.update(E2E_SETTINGS_FILE=str(frozen_settings), E2E_SETTINGS=str(frozen_settings),
                    E2E_FROZEN_SETTINGS=str(frozen_settings))
+        auth_state = private / 'playwright-auth.json'
+        auth_env = {**env, 'E2E_AUTH_STATE': str(auth_state)}
+        if command(['node', stack / 'playwright/auth-state.cjs'], stack / 'playwright',
+                   timeout=120, log_name='playwright-auth', command_env=auth_env):
+            raise RuntimeError('Browser login state preparation failed; see playwright-auth log')
+        auth_state.chmod(0o600)
+        env['E2E_AUTH_STATE'] = str(auth_state)
         (root / 'evidence').mkdir(exist_ok=True)
         os.chown(root / 'evidence', account.pw_uid, account.pw_gid)
         finish()
         from e2e_catalog import validate_result
+        from e2e_execution_graph import waves
         failed = []
-        for suite in args.suites:
-            start(suite)
+        failed_lock = threading.Lock()
+        run['execution_plan'] = {'max_parallel': 2, 'waves': waves(args.suites, 2),
+                                 'exclusive': ['E05'], 'login_state': 'shared-per-run'}
+        save()
+        def run_suite(suite):
+            stage = stage_start(suite)
             output = root / 'evidence' / suite
-            env.update(E2E_SUITE=suite, E2E_OUTPUT=str(output), E2E_RUN_ID=run_id,
-                       E2E_FAULT_CONTROL=str(stack / 'fault-control.py'))
+            suite_env = {**env, 'E2E_SUITE': suite, 'E2E_OUTPUT': str(output), 'E2E_RUN_ID': run_id,
+                         'E2E_FAULT_CONTROL': str(stack / 'fault-control.py')}
             code = command(['node', dependencies / '@playwright/test/cli.js',
-                            'test', '-c', 'playwright.config.ts'], stack / 'playwright', timeout=900)
+                            'test', '-c', 'playwright.config.ts'], stack / 'playwright', timeout=900,
+                           log_name=suite, command_env=suite_env)
             evidence = output / 'evidence.json'
             payload = json.loads(evidence.read_text()) if evidence.exists() else {}
-            run['test_results'].extend(payload.get('tests', []))
+            with state_lock:
+                run['test_results'].extend(payload.get('tests', []))
             try:
                 validate_result(payload, suite)
                 if code: raise ValueError('Browser process failed')
-                finish()
+                stage_finish(stage)
             except ValueError:
-                failed.append(suite)
-                finish(False)
+                with failed_lock:
+                    failed.append(suite)
+                stage_finish(stage, False)
+        for wave in run['execution_plan']['waves']:
+            check_lease()
+            with ThreadPoolExecutor(max_workers=min(2, len(wave))) as executor:
+                futures = [executor.submit(run_suite, suite) for suite in wave]
+                for future in as_completed(futures):
+                    future.result()
         for item in frozen:
             latest = access.resource('deployment', item['name'])
             if latest['metadata']['uid'] != item['uid'] or latest['spec']['template'] != item['template']:

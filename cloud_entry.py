@@ -4,6 +4,7 @@ import json
 import os
 import runpy
 import sys
+import threading
 import time
 from pathlib import Path
 from cloud_config import load,activate,enabled
@@ -52,7 +53,10 @@ def main():
     os.environ['PIPELINE_TRIGGER_TOKEN']=os.environ['PIPELINE_WORKER_TOKEN']
     from pr_pipeline_hub import PipelineHub,PipelineHTTPServer
     hub=PipelineHub(Path(cfg['paths']['data']) if role=='worker' else Path(cfg['paths']['state'])/role,cfg['urls']['public'])
-    if role=='worker':PipelineHTTPServer(('127.0.0.1',int(os.environ['PIPELINE_WORKER_PORT'])),hub).serve_forever()
+    if role=='worker':
+        from control_worker import work
+        threading.Thread(target=work,args=(hub,),daemon=True,name='control-queue-worker').start()
+        PipelineHTTPServer(('127.0.0.1',int(os.environ['PIPELINE_WORKER_PORT'])),hub).serve_forever()
     elif role=='editor':
         from local_selection import Handler,ThreadingHTTPServer
         server=ThreadingHTTPServer((os.environ['PIPELINE_EDITOR_BIND'],8793),Handler)
